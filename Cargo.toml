@@ -1,0 +1,11 @@
+[package]
+name = "bitutils2"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A package of tools for bit manipulations, including bit indexing, bitfields, and a variation of regular expressions for binary data"
+keywords = ["regex", "binary", "bitfield"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
