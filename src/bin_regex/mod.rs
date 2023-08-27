@@ -42,7 +42,9 @@
 //!
 //! ### Character Classes
 //!<pre class="rust">
-//! [un:x..=y] => Matches a sequence of 'n' bits
+//! [ascii:xyzA-Z3-9]
+//! [u8:1,2,3,4..10]
+//! 
 //!</pre>
 //!
 //! # Compositions
@@ -51,16 +53,19 @@
 //! xy       => Matches x followed by y
 //!</pre>
 
-use crate::bit_index::{BitIndex, BitIndexable};
-use crate::bit_field::{BitField};
+mod parse_helpers;
+use crate::bin_regex::parse_helpers::{EscapeIter, escape_vec, find_right_delimiter};
 
-#[derive(Debug, Clone)]
+use crate::bit_index::{bx, BitIndex, BitIndexable};
+use crate::bit_field::{BitField, FromBitField};
+
+#[derive(Debug, Clone, PartialEq)]
 enum Greediness {
     Greedy,
     Lazy
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Repeat {
     Exactly(usize),
     LessThan(usize, Greediness),
@@ -74,11 +79,25 @@ enum GroupType {
     Named(String)
 }
 
-#[derive(Debug, Clone)]
+// enum DynamicCharacterClass {
+//     U8(CharClass<u8>),
+//     U16(CharClass<u16>),
+//     U32(CharClass<u32>),
+//     U64(CharClass<u64>),
+//     I8(CharClass<i8>),
+//     I16(CharClass<i16>),
+//     I32(CharClass<i32>),
+//     I64(CharClass<i64>),
+//     F32(CharClass<f32>),
+//     F64(CharClass<f64>),
+// }
+
+#[derive(Debug, Clone, PartialEq)]
 enum Token {
     Repetition(Repeat, Box<Token>),
     Group(Option<usize>, Vec<Token>),
     Choice(Vec<Token>),
+    CharacterClass(std::rc::Rc<CharClass<u8>>),
     Nibble(u8),
     ByteBoundary,
     NibbleBoundary,
@@ -100,7 +119,278 @@ enum StateTransition {
     Free,
     EqualsBit(u8),
     EqualsNibble(u8),
-    ConsumeBits(usize)
+    ConsumeBits(usize),
+    CharacterClass(std::rc::Rc<CharClass<u8>>)
+}
+
+enum TextEncoding {
+    Ascii,
+    Utf8,
+    Utf16,
+    Hex
+}
+
+// trait CharClass: std::fmt::Debug {
+//     fn input_length(&self) -> BitIndex;
+//     fn matches(&self, input: &BitField) -> bool;
+// }
+
+// enum CharClassType {
+//     Ascii,
+//     UInt(usize),
+//     IInt(usize)
+// }
+
+// #[derive(PartialEq, Eq, Debug)]
+// struct U8CharClass {
+//     inverted: bool,
+//     options: std::collections::HashSet<u8>,
+//     ranges: Vec<(u8, u8)>
+// }
+
+// impl CharClass for U8CharClass {
+//     fn input_length(&self) -> BitIndex {BitIndex::new(1, 0)}
+//     fn matches(&self, input: &BitField) -> bool {
+//         let x = input.extract_u8(BitIndex::new(0, 0));
+//         if self.options.contains(&x) {
+//             return !self.inverted
+//         }
+//         for (start, end) in &self.ranges {
+//             if *start <= x && x <= *end {
+//                 return !self.inverted
+//             }
+//         }
+//         return self.inverted
+//     }
+// }
+
+#[derive(PartialEq, Eq, Debug)]
+struct CharClass<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField> {
+    inverted: bool,
+    options: std::collections::HashSet<T>,
+    ranges: Vec<(T, T)>,
+    input_length: BitIndex
+}
+
+impl<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug> CharClass<T> {
+    fn input_length(&self) -> BitIndex {self.input_length}
+    fn matches(&self, input: &BitField) -> bool {
+        let x: T = T::from_bf(input);
+        //println!("TRYING TO MATCH {:?}", x);
+        if self.options.contains(&x) {
+            return !self.inverted
+        }
+        for (start, end) in &self.ranges {
+            if *start <= x && x <= *end {
+                return !self.inverted
+            }
+        }
+        return self.inverted
+    }
+}
+
+fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<u8>, String> {
+    let mut input_iter = escape_vec(input).peekable();
+    let mut options = std::collections::HashSet::<u8>::new();
+    let mut ranges = Vec::<(u8, u8)>::new();
+    let mut prev_char: Option<u8> = None;
+    let mut escaped = false;
+    let mut range_started = false;
+
+    let inverted = if input_iter.peek() == Some(&('^', false)) {
+        input_iter.next();
+        true
+    } else {
+        false
+    };
+
+    for (c, escaped) in input_iter {
+        match c {
+            '-' if !escaped => {
+                match prev_char {
+                    Some(p) if range_started => return Err("Unexpected '-' encountered after '-'".to_string()),
+                    Some(p) => {
+                        range_started = true;
+                        continue
+                    },
+                    None => return Err("Unexpected '-' encountered at beginning of character class".to_string()),
+                }
+            },
+            _ if range_started => {
+                match prev_char {
+                    Some(p) => {
+                        ranges.push((p as u8, c as u8));
+                        prev_char = None;
+                    },
+                    None => return Err("Impossible state".to_string())
+                }
+            },
+            _ => {
+                match prev_char {
+                    Some(p) => {
+                        options.insert(p as u8);
+                    },
+                    None => ()
+                }
+                prev_char = Some(c as u8);
+            }
+        }
+        range_started = false;
+
+    }
+    match prev_char {
+        Some(p) => {
+            options.insert(p as u8);
+        },
+        None => ()
+    }
+    Ok(CharClass::<u8> {inverted, options, ranges, input_length: BitIndex::new(1, 0)})
+}
+
+enum RangeParseProgress<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug> {
+    NotStarted,
+    OneDot(T),
+    TwoDot(T)
+}
+
+fn parse_uint_char_class<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug>(input: &Vec<char>, nbits: usize) -> Result<CharClass<T>, String>
+where <T as std::str::FromStr>::Err: std::fmt::Display {
+    let input_length = bx(nbits);
+    let mut input_iter = escape_vec(input).peekable();
+    let mut options = std::collections::HashSet::<T>::new();
+    let mut ranges = Vec::<(T, T)>::new();
+    let mut prev_word = Vec::<char>::new();
+    let mut range_prog = RangeParseProgress::<T>::NotStarted;
+
+    let inverted = if input_iter.peek() == Some(&('^', false)) {
+        input_iter.next();
+        true
+    } else {
+        false
+    };
+
+    for (c, escaped) in input_iter {
+        if escaped {
+            return Err("Escaped characters invalid in decimal character class".to_string());
+        }
+        match c {
+            ',' => {
+                match prev_word.iter().collect::<String>().parse::<T>() {
+                    Ok(n) => {
+                        match range_prog {
+                            RangeParseProgress::NotStarted => {
+                                options.insert(n);
+                            },
+                            RangeParseProgress::TwoDot(n0) => {
+                                ranges.push((n0, n));
+                                range_prog = RangeParseProgress::NotStarted;
+                            },
+                            _ => return Err(format!("Encountered unexpected character '{}' while parsing range", c))
+                        }
+                    },
+                    Err(msg) => return Err(msg.to_string())
+                }
+                prev_word.clear();
+            },
+            '.' => {
+                match range_prog {
+                    RangeParseProgress::NotStarted => {
+                        match prev_word.iter().collect::<String>().parse::<T>() {
+                            Ok(n) => {
+                                range_prog = RangeParseProgress::OneDot(n);
+                                prev_word.clear();
+                            },
+                            Err(msg) => return Err(msg.to_string())
+                        }
+                    },
+                    RangeParseProgress::OneDot(n0) => {
+                        if !prev_word.is_empty() {
+                            return Err("Impossible State".to_string())
+                        }
+                        range_prog = RangeParseProgress::TwoDot(n0);
+                    },
+                    RangeParseProgress::TwoDot(n0) => {
+                        return Err(format!("Encountered unexpected character '{}' while parsing range", c))
+                    }
+                }
+            },
+            '0'..='9' => {
+                match range_prog {
+                    RangeParseProgress::OneDot(n0) => {
+                        return Err(format!("Encountered unexpected character '{}' while parsing range", c))
+                    },
+                    _ => ()
+                }
+                prev_word.push(c);
+            },
+            _ => return Err(format!("Encountered unexpected character '{}' while parsing decimal character class", c))
+        }
+
+    }
+
+    if prev_word.is_empty() {
+        return Err("Encountered end of character class before expected".to_string())
+    }
+    match prev_word.iter().collect::<String>().parse::<T>() {
+        Ok(n) => {
+            match range_prog {
+                RangeParseProgress::NotStarted => {
+                    options.insert(n);
+                },
+                RangeParseProgress::TwoDot(n0) => {
+                    ranges.push((n0, n));
+                },
+                _ => return Err("Encountered end of character class before expected".to_string())
+            }
+        },
+        Err(msg) => return Err(msg.to_string())
+    }
+
+    Ok(CharClass::<T> {inverted, options, ranges, input_length})
+}
+
+fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
+    let mut from_start = Vec::<char>::new();
+    for (i, c) in input.iter().enumerate() {
+        match c {
+            '0'..='9'|'a'..='z'|'A'..='Z' => {
+                from_start.push(*c);
+            },
+            ':' => {
+                match from_start[1..].iter().collect::<String>().parse::<usize>() {
+                    Ok(n) => {
+                        match from_start[0] {
+                            'a' => {
+                                match parse_ascii_char_class(&input[i+1..].to_vec()) {
+                                    Ok(cls) => {
+                                        return Ok(Token::CharacterClass(std::rc::Rc::new(cls)))
+                                    },
+                                    Err(msg) => return Err(msg)
+                                }
+                            },
+                            'u' => {
+                                match parse_uint_char_class::<u8>(&input[i+1..].to_vec(), n) {
+                                    Ok(cls) => {
+                                        return Ok(Token::CharacterClass(std::rc::Rc::new(cls)))
+                                    },
+                                    Err(msg) => return Err(msg)
+                                }
+                            },
+                            _ => return Err(format!("Character class type '{}' not recognized", from_start.iter().collect::<String>()))
+                        }
+                    },
+                    Err(msg) => return Err(msg.to_string())
+                }
+            },
+            _ => break
+        }
+    }
+    match parse_ascii_char_class(input) {
+        Ok(cls) => {
+            Ok(Token::CharacterClass(std::rc::Rc::new(cls)))
+        },
+        Err(msg) => Err(msg)
+    }
 }
 
 fn compile(input: &Vec<Token>, start_index: usize) -> Vec<Vec<(usize, StateTransition, Vec<StateFlag>)>> {
@@ -181,6 +471,10 @@ fn compile(input: &Vec<Token>, start_index: usize) -> Vec<Vec<(usize, StateTrans
                 result.extend(inside_result);
                 i += inside_len;
             },
+            Token::CharacterClass(cls) => {
+                result.push(vec![(i + 1, StateTransition::CharacterClass(cls.clone()), vec![])]);
+                i += 1;
+            }
             Token::BitZero => {
                 result.push(vec![(i + 1, StateTransition::EqualsBit(0), vec![])]);
                 i += 1;
@@ -308,7 +602,7 @@ fn optimize(fsm: &mut Vec<Vec<(usize, StateTransition, Vec<StateFlag>)>>) {
 
     let n_states = fsm.len();
     for state in 0..n_states {
-        let new_transitions = get_direct_transitions(&fsm, state);
+        let new_transitions = get_direct_transitions(fsm, state);
         fsm[state] = new_transitions;
     }
 
@@ -318,32 +612,12 @@ fn optimize(fsm: &mut Vec<Vec<(usize, StateTransition, Vec<StateFlag>)>>) {
 
 }
 
-fn find_right_delimiter(input: &Vec<char>, start: usize, left: char, right: char) -> Option<usize> {
-    let mut depth = 0;
-    let mut i = start;
-    loop {
-        let c = input[i];
-        if c == left {
-            depth += 1;
-        } else if c == right {
-            if depth == 1 {
-                return Some(i)
-            }
-            depth -= 1;
-        }
-        i += 1;
-        if i == input.len() {
-            return None
-        }
-    }
-}
-
 fn tokenize(pattern: &str) -> Result<(Vec<Token>, usize, std::collections::HashMap<String, usize>), String> {
     let char_vec: Vec<char> = pattern.chars().collect();
     tokenize_vec(&char_vec, 1)
 }
 
-fn parse_group_header(input: &Vec<char>) -> Result<(GroupType, usize), String> {
+fn parse_group_header(input: &[char]) -> Result<(GroupType, usize), String> {
     let mut input_iter = input.iter();
     match &input_iter.next() {
         Some('?') => {
@@ -417,7 +691,7 @@ fn tokenize_vec(char_vec: &Vec<char>, start_group: usize) -> Result<(Vec<Token>,
                 }
             },
             '+' => {
-                if result.len() == 0 {
+                if result.is_empty() {
                     return Err("Encountered '+' at beginning of group".to_string())
                 } else {
                     let mut greediness = Greediness::Greedy;
@@ -433,29 +707,19 @@ fn tokenize_vec(char_vec: &Vec<char>, start_group: usize) -> Result<(Vec<Token>,
                 option_flag = true;
             },
             '[' => {
-                match find_right_delimiter(&char_vec, i, '[', ']') {
+                match find_right_delimiter(char_vec, i, '[', ']') {
                     Some(end_index) => {
-                        match tokenize_vec(&char_vec[i+1..end_index].to_vec(), group_index) {
-                            Ok((tokens, new_groups, new_groups_map)) => {
-                                result.push(Token::Choice(tokens));
-                                group_index += new_groups;
-                                for (key, val) in new_groups_map.iter() {
-                                    if groups_map.contains_key(key) {
-                                        return Err(format!("Group name '{}' used more than once", key))
-                                    } else {
-                                        groups_map.insert(key.clone(), *val);
-                                    }
-                                }
-                            },
-                            Err(msg) => return Err(msg.to_string())
-                        } 
+                        match parse_char_class(&char_vec[i+1..end_index].to_vec()) {
+                            Ok(token) => result.push(token),
+                            Err(msg) => return Err(msg)
+                        }
                         i = end_index;
                     },
                     None => return Err("Unclosed opening delimiter '['".to_string())
                 }
             },
             '{' => {
-                match find_right_delimiter(&char_vec, i, '{', '}') {
+                match find_right_delimiter(char_vec, i, '{', '}') {
                     Some(end_index) => {
                         let inside = &char_vec[i+1..end_index];
                         i = end_index;
@@ -516,9 +780,9 @@ fn tokenize_vec(char_vec: &Vec<char>, start_group: usize) -> Result<(Vec<Token>,
                 }
             },
             '(' => {
-                match find_right_delimiter(&char_vec, i, '(', ')') {
+                match find_right_delimiter(char_vec, i, '(', ')') {
                     Some(end_index) => {
-                        match parse_group_header(&char_vec[i+1..end_index].to_vec()) {
+                        match parse_group_header(&char_vec[i+1..end_index]) {
                             Ok((GroupType::Numbered, start_index)) => {
                                 match tokenize_vec(&char_vec[i+1+start_index..end_index].to_vec(), group_index + 1) {
                                     Ok((tokens, new_groups, new_groups_map)) => {
@@ -532,7 +796,7 @@ fn tokenize_vec(char_vec: &Vec<char>, start_group: usize) -> Result<(Vec<Token>,
                                             }
                                         }
                                     },
-                                    Err(msg) => return Err(msg.to_string())
+                                    Err(msg) => return Err(msg)
                                 } 
                                 i = end_index;
                             },
@@ -554,7 +818,7 @@ fn tokenize_vec(char_vec: &Vec<char>, start_group: usize) -> Result<(Vec<Token>,
                                             }
                                         }
                                     },
-                                    Err(msg) => return Err(msg.to_string())
+                                    Err(msg) => return Err(msg)
                                 } 
                                 i = end_index;
                             },
@@ -571,7 +835,7 @@ fn tokenize_vec(char_vec: &Vec<char>, start_group: usize) -> Result<(Vec<Token>,
                                             }
                                         }
                                     },
-                                    Err(msg) => return Err(msg.to_string())
+                                    Err(msg) => return Err(msg)
                                 } 
                                 i = end_index;
                             },
@@ -625,9 +889,7 @@ fn tokenize_vec(char_vec: &Vec<char>, start_group: usize) -> Result<(Vec<Token>,
 fn check_state_flags<T: BitIndexable>(input: &T, flags: &Vec<StateFlag>, offset: BitIndex) -> bool {
     for flag in flags {
         match flag {
-            StateFlag::GroupStart(_) | StateFlag::GroupEnd(_) => {
-                ()
-            },
+            StateFlag::GroupStart(_) | StateFlag::GroupEnd(_) => (),
             StateFlag::NotOffsetAnd(value) => {
                 if (offset.bit() & value) != 0 {
                     return false
@@ -639,7 +901,7 @@ fn check_state_flags<T: BitIndexable>(input: &T, flags: &Vec<StateFlag>, offset:
 }
 
 
-/// Structure to contain [`BinRegex`](crate::bin_regex::BinRegex) matches.
+/// Structure to contain a single [`BinRegex`](crate::bin_regex::BinRegex) match.
 ///
 /// # Examples
 /// ```rust
@@ -685,12 +947,12 @@ impl<'a, T: BitIndexable> BinMatch<'a, T> {
 
     /// Accesses the start index of the match
     pub fn start(&self) -> BitIndex {
-        self.start.clone()
+        self.start
     }
 
     /// Accesses the end index of the match
     pub fn end(&self) -> BitIndex {
-        self.end.clone()
+        self.end
     }
 
     /// Returns `true` if the match is empty (`start == end`)
@@ -700,7 +962,7 @@ impl<'a, T: BitIndexable> BinMatch<'a, T> {
 
     /// Returns a tuple with the start and end indices of the match
     pub fn span(&self) -> (BitIndex, BitIndex) {
-        (self.start.clone(), self.end.clone())
+        (self.start, self.end)
     }
 
     /// Returns the contents of the match as a [`BitField`](crate::BitField)
@@ -709,12 +971,63 @@ impl<'a, T: BitIndexable> BinMatch<'a, T> {
     }
 }
 
+/// Iterator that yields successive non-overlapping matches of the provided input.
+/// There is no public constructor for this structure, instead users must use
+/// [`BinRegex.find_iter`](crate::BinRegex::find_iter).
+pub struct BinMatches<'a, T: BitIndexable> {
+    gen: CapturePathGenerator<'a, T>,
+    max_index: BitIndex,
+    current_offset: BitIndex
+}
+
+impl<'a, T: BitIndexable> BinMatches<'a, T> {
+    fn new(fsm: &'a Vec<Vec<(usize, StateTransition, Vec<StateFlag>)>>, input: &'a T) -> BinMatches<'a, T> {
+        let gen = CapturePathGenerator::new(fsm, input);
+        let max_index = gen.input.max_index();
+        BinMatches {gen, max_index, current_offset: BitIndex::new(0, 0)}
+    }
+}
+
+impl<'a, T: BitIndexable> std::iter::Iterator for BinMatches<'a, T> {
+    type Item = BinMatch<'a, T>;
+
+    fn next(&mut self) -> Option<BinMatch<'a, T>> {
+        while self.current_offset < self.max_index {
+            self.gen.reset(self.current_offset);
+            if let Some((_, initial_offset)) = self.gen.next() {
+                let mut max_offset = initial_offset;
+                loop {
+                    match self.gen.next() {
+                        Some((_, offset)) if offset > max_offset => {
+                            max_offset = offset;
+                        },
+                        None => {
+                            let res = Some(BinMatch::new(self.gen.input, self.current_offset, max_offset));
+                            self.current_offset = max_offset;
+                            return res
+                        },
+                        _ => ()
+                    }
+                }
+            }
+            self.current_offset += 1;
+        }
+        None
+    }
+}
+
+/// Represents the capture groups from a single match
 pub struct BinCaptures<'a, T: BitIndexable> {
     groups: Vec<Option<BinMatch<'a, T>>>,
     groups_map: &'a std::collections::HashMap<String, usize>
 }
 
 impl<'a, T: BitIndexable> BinCaptures<'a, T> {
+
+    /// Returns the capture group associated with the index `i` if that group
+    /// matched any part of the input. Returns `None` otherwise. Capture groups
+    /// are numbered from left to right by the position of the left parenthesis,
+    /// starting at 1. Group 0 refers to the entire match.
     pub fn get(&self, i: usize) -> Option<BinMatch<T>> {
         if i < self.groups.len() {
             match &self.groups[i] {
@@ -726,6 +1039,9 @@ impl<'a, T: BitIndexable> BinCaptures<'a, T> {
         }
     }
 
+    /// Returns the capture group associated with the name `name` if a group
+    /// with that name exists in the expression and matched any part of the
+    /// input. Returns `None` otherwise.
     pub fn name(&self, name: &str) -> Option<BinMatch<T>> {
         match self.groups_map.get(&name.to_string()) {
             Some(index) => self.get(*index),
@@ -792,7 +1108,7 @@ impl<'a, T: BitIndexable> CapturePathGenerator<'a, T> {
                 }
 
                 let (dest, transition, flags) = &transitions[self.t_index];
-                if check_state_flags(self.input, &flags, self.current_offset) {
+                if check_state_flags(self.input, flags, self.current_offset) {
                     match transition {
                         StateTransition::Free => {
                             self.current_path.push((self.current_state, self.t_index, self.current_offset));
@@ -800,7 +1116,7 @@ impl<'a, T: BitIndexable> CapturePathGenerator<'a, T> {
                             break;
                         },
                         StateTransition::EqualsBit(value) => {
-                            if self.current_offset + 1 <= self.max_offset && self.input.bit_at(&self.current_offset) == *value {
+                            if self.current_offset < self.max_offset && self.input.bit_at(&self.current_offset) == *value {
                                 self.current_path.push((self.current_state, self.t_index, self.current_offset));
                                 self.current_state = *dest;
                                 self.current_offset += 1;
@@ -826,6 +1142,20 @@ impl<'a, T: BitIndexable> CapturePathGenerator<'a, T> {
                                     break;   
                                 }
                             }                       
+                        },
+                        StateTransition::CharacterClass(cls) => {
+                            let n = cls.input_length();
+                            let end = self.current_offset + n;
+                            if end <= self.max_offset {
+                                let bf = self.input.bit_slice(&self.current_offset, &end);
+                                println!("{:?}, {}", bf, cls.matches(&bf));
+                                if cls.matches(&bf) {
+                                    self.current_path.push((self.current_state, self.t_index, self.current_offset));
+                                    self.current_state = *dest;
+                                    self.current_offset = end;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -842,9 +1172,8 @@ impl<'a, T: BitIndexable> CapturePathGenerator<'a, T> {
     }
 }
 
-/// A compiled regular expression for binary searches
-///
-
+/// A compiled variation of regular expressions intended for searching binary data. A
+/// [`BinRegex`](crate::BinRegex) can be used to search binary data for patterns
 pub struct BinRegex {
     fsm: Vec<Vec<(usize, StateTransition, Vec<StateFlag>)>>,
     pub n_groups: usize,
@@ -852,6 +1181,9 @@ pub struct BinRegex {
 }
 
 impl BinRegex {
+
+    /// Compiles a binary regular expression. Once compiled, this object can be used 
+    /// repeatedly to search input buffers.
     pub fn new(pattern: &str) -> Result<BinRegex, String>{
         let (tokens, n_groups, groups_map) = tokenize(pattern)?;
         let n_groups = n_groups + 1;
@@ -880,7 +1212,7 @@ impl BinRegex {
                     }
                 }
             },
-            None => return None
+            None => None
         }
     }
 
@@ -902,32 +1234,34 @@ impl BinRegex {
     ///```
     pub fn find<'a, T>(&'a self, input: &'a T) -> Option<BinMatch<T>> 
     where &'a T: BitIndexable, T: BitIndexable {
-        let mut gen = CapturePathGenerator::new(&self.fsm, &input);
+        let mut gen = CapturePathGenerator::new(&self.fsm, input);
 
         let mut i = BitIndex::new(0, 0);
         let max_index = input.max_index();
         while i < max_index {
             gen.reset(i);
-            match gen.next() {
-                Some((initial_path, initial_offset)) => {
-                    let mut max_offset = initial_offset;
-                    let mut current_path = initial_path;
-                    loop {
-                        match gen.next() {
-                            Some((path, offset)) if offset > max_offset => {
-                                max_offset = offset;
-                                current_path = path
-                            },
-                            None => return Some(BinMatch::new(&input, i, max_offset)),
-                            _ => ()
-                        }
+            if let Some((_, initial_offset)) = gen.next() {
+                let mut max_offset = initial_offset;
+                loop {
+                    match gen.next() {
+                        Some((_, offset)) if offset > max_offset => {
+                            max_offset = offset;
+                        },
+                        None => return Some(BinMatch::new(input, i, max_offset)),
+                        _ => ()
                     }
-                },
-                None => ()
+                }
             }
             i += 1;
         }
-        return None
+        None
+    }
+
+    /// Returns an iterator that yields successive non-overlapping matches in the input buffer.
+    pub fn find_iter<'a, T>(&'a self, input: &'a T) -> BinMatches<'a, T>
+    where &'a T: BitIndexable, T: BitIndexable {
+        BinMatches::new(&self.fsm, input)
+
     }
 
     pub fn match_length<'a, T>(&'a self, input: &'a T) -> Option<BitIndex> 
@@ -980,7 +1314,7 @@ impl BinRegex {
                     }
                 }
                 groups[0] = Some(BinMatch::new(input, BitIndex::new(0, 0), offset));
-                return Some(BinCaptures {groups, groups_map: &self.groups_map})
+                Some(BinCaptures {groups, groups_map: &self.groups_map})
             }
             None => None
         }
@@ -990,6 +1324,89 @@ impl BinRegex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn u8_char_class() {
+        let input = "u5:0,1,23".chars().collect();
+        let res = parse_char_class(&input);
+        let mut options = std::collections::HashSet::new();
+        options.insert(0);
+        options.insert(1);
+        options.insert(23);
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx(5)}))));
+
+        let input = "u6:^0,1,23".chars().collect();
+        let res = parse_char_class(&input);
+        let mut options = std::collections::HashSet::new();
+        options.insert(0);
+        options.insert(1);
+        options.insert(23);
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![], input_length: bx(6)}))));
+
+        let input = "u8:^0,50..64,1,23,100..128".chars().collect();
+        let res = parse_char_class(&input);
+        let mut options = std::collections::HashSet::new();
+        options.insert(0);
+        options.insert(1);
+        options.insert(23);
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![(50,64), (100, 128)], input_length: bx(8)}))));
+    }
+
+    #[test]
+    fn ascii_char_class() {
+        let input = "abc".chars().collect();
+        let res = parse_char_class(&input);
+        let mut options = std::collections::HashSet::new();
+        options.insert(97);
+        options.insert(98);
+        options.insert(99);
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx(8)}))));
+
+        let input = "a8:^abc".chars().collect();
+        let res = parse_char_class(&input);
+        let mut options = std::collections::HashSet::new();
+        options.insert(97);
+        options.insert(98);
+        options.insert(99);
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![], input_length: bx(8)}))));
+
+        let input = "\\\\a\\bc".chars().collect();
+        let res = parse_char_class(&input);
+        let mut options = std::collections::HashSet::new();
+        options.insert(92);
+        options.insert(97);
+        options.insert(98);
+        options.insert(99);
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx(8)}))));
+
+        let input = "a8:abc0-9".chars().collect();
+        let res = parse_char_class(&input);
+        let mut options = std::collections::HashSet::new();
+        options.insert(97);
+        options.insert(98);
+        options.insert(99);
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![(48, 57)], input_length: bx(8)}))));
+
+        let input = "abc0-9\\--z".chars().collect();
+        let res = parse_char_class(&input);
+        let mut options = std::collections::HashSet::new();
+        options.insert(97);
+        options.insert(98);
+        options.insert(99);
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![(48, 57), (45, 122)], input_length: bx(8)}))));
+
+        let input = "a8:^0-9abc0-9d\\--zef".chars().collect();
+        let res = parse_char_class(&input);
+        let mut options = std::collections::HashSet::new();
+        options.insert(97);
+        options.insert(98);
+        options.insert(99);
+        options.insert(100);
+        options.insert(101);
+        options.insert(102);
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![(48, 57), (48, 57), (45, 122)], input_length: bx(8)}))));
+    }
+
     #[test]
     fn group_headers() {
         let input = "___''..".chars().collect::<Vec<char>>();

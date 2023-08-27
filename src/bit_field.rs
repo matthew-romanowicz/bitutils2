@@ -90,7 +90,6 @@ use crate::bit_index::{BitIndex, BitIndexable};
 /// assert_eq!(!&bf2, BitField::from_bin_str("1010 1111 0011 1000 0101 0000 1110"));
 /// assert_eq!(!&bf3, BitField::from_bin_str("1010 1111 0011 10"));
 ///```
-
 #[derive(Clone, Debug)]
 pub struct BitField {
     v: Vec<u8>,
@@ -148,12 +147,11 @@ impl BitField {
     /// Creates and returns a [`BitField`](crate::BitField) of ones (0xFF) with the given length.
     pub fn ones(length: &BitIndex) -> BitField {
         let mut v = Vec::<u8>::new();
-        let end = if length.bit() == 0 {length.byte()} else {length.byte() + 1};
         if length.bit() == 0 {
             v.resize(length.byte(), 0xff);
         } else {
             v.resize(length.byte() + 1, 0xff);
-            let last = (v[length.byte()] >> (8 - length.bit())) << (8 - length.bit());
+            let last = (v[length.byte()] >> length.cbit()) << length.cbit();
             v[length.byte()] = last;
         }
         BitField {v, length: *length}
@@ -238,7 +236,7 @@ impl BitField {
 
     /// Returns the length of the [`BitField`](crate::BitField) as a [`BitIndex`](crate::BitIndex).
     pub fn len(&self) -> BitIndex {
-        self.length.clone()
+        self.length
     }
 
     /// Deletes the contents of the [`BitField`](crate::BitField) and sets the length to 0.
@@ -257,10 +255,10 @@ impl BitField {
             self.v.truncate(new_length.byte());
         } else {
             self.v.truncate(new_length.byte() + 1);
-            let last = (self.v[new_length.byte()] >> (8 - new_length.bit())) << (8 - new_length.bit());
+            let last = (self.v[new_length.byte()] >> new_length.cbit()) << new_length.cbit();
             self.v[new_length.byte()] = last;
         }
-        self.length = new_length.clone();
+        self.length = *new_length;
     }
 
     /// Concatenates the argument onto the end of the [`BitField`](crate::BitField), adjusting the 
@@ -269,7 +267,7 @@ impl BitField {
         if self.length.bit() == 0 {
             self.v.extend(other.v.clone());
         } else {
-            let cbit = 8 - self.length.bit();
+            let cbit = self.length.cbit();
             self.v[self.length.byte()] |= other.v[0] >> self.length.bit();
             let mut carry = other.v[0] << cbit;
             let end = if other.length.bit() == 0 {other.length.byte()} else {other.length.byte() + 1};
@@ -301,6 +299,14 @@ impl BitField {
         }
     }
 
+    pub fn extract_u8(&self, start: BitIndex) -> u8 {
+        if start.bit() == 0 {
+            self.v[start.byte()]
+        } else {
+            (self.v[start.byte()] << start.bit()) | (self.v[start.byte() + 1] >> start.cbit())
+        }
+    }
+
 }
 
 impl BitIndexable for BitField {
@@ -312,8 +318,10 @@ impl BitIndexable for BitField {
         // This is the same implementation as the Vec<u8> bit_slice method. If you change this, consider changing the other one
         let start_byte = start.byte();
         let start_bit = start.bit();
+        let start_cbit = start.cbit();
         let end_byte = end.byte();
         let end_bit = end.bit();
+        let end_cbit = end.cbit();
 
         let mut res = Vec::<u8>::new();
 
@@ -321,32 +329,36 @@ impl BitIndexable for BitField {
             res = self.v[start_byte..end_byte].to_vec();
         } else {
             for i in start_byte..end_byte {
-                let carry = if i + 1 < self.v.len() {self.v[i+1] >> (8 - start_bit)} else {0};
+                let carry = if i + 1 < self.v.len() {self.v[i+1] >> start_cbit} else {0};
                 println!("{} {}", i, carry);
                 res.push((self.v[i] << start_bit) | carry);
             }
         }
-        if start_bit < end_bit {
-            res.push((self.v[end_byte] >> (8 - end_bit)) << (start_bit + 8 - end_bit));
-        } else if end_bit < start_bit {
-            let res_len = res.len();
-            let last = res[res_len - 1];
-            res[res_len - 1] = (last >> (start_bit - end_bit)) << (start_bit - end_bit);
+        match start_bit.cmp(&end_bit) {
+            std::cmp::Ordering::Greater => {
+                let res_len = res.len();
+                let last = res[res_len - 1];
+                res[res_len - 1] = (last >> (start_bit - end_bit)) << (start_bit - end_bit);
+            },
+            std::cmp::Ordering::Less => {
+                res.push((self.v[end_byte] >> end_cbit) << (start_bit + end_cbit));
+            },
+            _ => ()
         }
         BitField {v: res, length: *end - *start}
     }
 
     fn max_index(&self) -> BitIndex {
-        self.length.clone()
+        self.length
     }
 }
 
 impl std::cmp::PartialEq for BitField {
     fn eq(&self, other: &Self) -> bool {
         if self.len() != other.len() {
-            return false
+            false
         } else if self.len().bit() == 0 {
-            return self.v == other.v
+            self.v == other.v
         } else {
             let n = self.length.byte();
             if self.v[0..n] != other.v[0..n] {
@@ -355,9 +367,9 @@ impl std::cmp::PartialEq for BitField {
             let m = if cfg!(test) { // If testing, verify all bits, even the ones past the end of the "final" bit
                 0
             } else {
-                8 - self.len().bit()
+                self.len().cbit()
             };
-            return (self.v[n] >> m) == (other.v[n] >> m)
+            (self.v[n] >> m) == (other.v[n] >> m)
         }
     }
 }
@@ -380,8 +392,8 @@ impl std::ops::BitAnd for &BitField  {
     ///```
     fn bitand(self, rhs: &BitField) -> BitField {
         let min_len = std::cmp::min(self.len(), rhs.len());
-        let mut res = Vec::<u8>::new();
         let end = if min_len.bit() != 0 {min_len.byte() + 1} else {min_len.byte()};
+        let mut res = Vec::<u8>::with_capacity(end);
         for i in 0..end {
             res.push(self.v[i] & rhs.v[i]);
         }
@@ -406,13 +418,13 @@ impl std::ops::BitOr for &BitField {
     ///```
     fn bitor(self, rhs: &BitField) -> BitField {
         let min_len = std::cmp::min(self.len(), rhs.len());
-        let mut res = Vec::<u8>::new();
         let end = if min_len.bit() != 0 {min_len.byte() + 1} else {min_len.byte()};
+        let mut res = Vec::<u8>::with_capacity(end);
         for i in 0..end {
             res.push(self.v[i] | rhs.v[i]);
         }
         if min_len.bit() != 0 {
-            let last = (res[end - 1] >> (8 - min_len.bit())) << (8 - min_len.bit());
+            let last = (res[end - 1] >> min_len.cbit()) << min_len.cbit();
             res[end - 1] = last;
         }
         BitField {v: res, length: min_len}
@@ -435,13 +447,13 @@ impl std::ops::BitXor for &BitField {
     ///```
     fn bitxor(self, rhs: &BitField) -> BitField {
         let min_len = std::cmp::min(self.len(), rhs.len());
-        let mut res = Vec::<u8>::new();
         let end = if min_len.bit() != 0 {min_len.byte() + 1} else {min_len.byte()};
+        let mut res = Vec::<u8>::with_capacity(end);
         for i in 0..end {
             res.push(self.v[i] ^ rhs.v[i]);
         }
         if min_len.bit() != 0 {
-            let last = (res[end - 1] >> (8 - min_len.bit())) << (8 - min_len.bit());
+            let last = (res[end - 1] >> min_len.cbit()) << min_len.cbit();
             res[end - 1] = last;
         }
         BitField {v: res, length: min_len}
@@ -461,13 +473,13 @@ impl std::ops::Not for &BitField {
     /// assert_eq!(!&bf, BitField::from_bin_str("1100 0101 1111 0000 0011 1010 1000"));
     ///```
     fn not(self) -> BitField {
-        let mut res = Vec::<u8>::new();
         let end = if self.length.bit() != 0 {self.length.byte() + 1} else {self.length.byte()};
+        let mut res = Vec::<u8>::with_capacity(end);
         for i in 0..end {
             res.push(!self.v[i]);
         }
         if self.length.bit() != 0 {
-            let last = (res[end - 1] >> (8 - self.length.bit())) << (8 - self.length.bit());
+            let last = (res[end - 1] >> self.length.cbit()) << self.length.cbit();
             res[end - 1] = last;
         }
         BitField {v: res, length: self.len()}
@@ -519,6 +531,22 @@ impl std::ops::Shl<usize> for BitField {
         BitField {v: res, length: self.len()}
     }
 
+}
+
+pub trait FromBitField {
+    fn from_bf(bf: &BitField) -> Self;
+}
+
+impl FromBitField for u8 {
+
+    fn from_bf(bf: &BitField) -> u8 {
+        let b = bf.len().bit();
+        if b == 0 {
+            bf.v[0]
+        } else {
+            bf.v[0] >> (8 - b)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -734,5 +762,19 @@ mod bit_field_tests {
         let bx2 = BitIndex::new(1, 6);
         let s = bf.bit_slice(&bx1, &bx2);
         assert_eq!(s, BitField::from_bin_str("1100 0011 1010 01"));
+    }
+
+    #[test]
+    fn extract_u8() {
+        let bf = BitField::from_bin_str("0011 1000 1010 0101 1110");
+        assert_eq!(bf.extract_u8(BitIndex::new(0, 0)), 0x38);
+        assert_eq!(bf.extract_u8(BitIndex::new(0, 1)), 0x71);
+        assert_eq!(bf.extract_u8(BitIndex::new(0, 2)), 0xe2);
+        assert_eq!(bf.extract_u8(BitIndex::new(0, 3)), 0xc5);
+        assert_eq!(bf.extract_u8(BitIndex::new(0, 4)), 0x8a);
+        assert_eq!(bf.extract_u8(BitIndex::new(0, 5)), 0x14);
+        assert_eq!(bf.extract_u8(BitIndex::new(0, 6)), 0x29);
+        assert_eq!(bf.extract_u8(BitIndex::new(0, 7)), 0x52);
+        assert_eq!(bf.extract_u8(BitIndex::new(1, 0)), 0xa5);
     }
 }  

@@ -1,5 +1,5 @@
 mod bit_index;
-pub use crate::bit_index::{BitIndex, BitIndexable};
+pub use crate::bit_index::{bx, BitIndex, BitIndexable};
 
 mod bit_field;
 pub use crate::bit_field::BitField;
@@ -8,17 +8,9 @@ pub mod bin_regex;
 pub use crate::bin_regex::{BinRegex, BinMatch, BinCaptures};
 
 
-
-
-
-/// Helper function for initializing [`BitIndex`](crate::BitIndex)
-pub fn bx(bits: usize) -> BitIndex {
-    BitIndex::new(bits >> 3, bits & 0x07)
-}
-
 #[cfg(test)]
 mod match_tests {
-    use crate::{BinRegex, BitField, bx};
+    use crate::{BinRegex, BitField, BitIndex, bx};
 
     #[test]
     fn captures_basic() {
@@ -244,6 +236,20 @@ mod match_tests {
     }
 
     #[test]
+    fn ascii_char_class() {
+        let v = "hello world! What's up?".as_bytes().to_vec();
+        assert_eq!(BinRegex::new("[a-z]*").unwrap().match_length(&v), Some(BitIndex::new(5, 0)));
+        assert_eq!(BinRegex::new("[a-z ]*").unwrap().match_length(&v), Some(BitIndex::new(11, 0)));
+    }
+
+    #[test]
+    fn char_class() {
+        let v = vec![0b01100101, 0b01001110, 0b10010011, 0b11111111, 0b01010010, 0b00010011, 0b00010011];
+        assert_eq!(BinRegex::new("[u3:0..3]+[u3:^0..3]").unwrap().match_length(&v), Some(BitIndex::new(1, 4)));
+        assert_eq!(BinRegex::new("[u4:^0..2]*[u4:0..2]+").unwrap().match_length(&v), Some(BitIndex::new(5, 4)));
+    }
+
+    #[test]
     fn advanced() {
         let v = vec![0b11010101, 0b00110100, 0b11010100, 0b11010101, 0b11110000];
         assert_eq!(BinRegex::new("''(_')*__").unwrap().match_length(&v), Some(bx(10)));
@@ -267,5 +273,32 @@ mod match_tests {
         let m = re.find(&v).unwrap();
         assert_eq!(m.span(), (bx(23), bx(34)));
         assert_eq!(m.as_bf(), BitField::from_bin_str("01101010111"));
+
+        let s = "My IP Address is 192.168.0.1. What's yours?".as_bytes().to_vec();
+        let re = BinRegex::new(":([0-9]{0,3}[.]){3}[0-9]{0,3}").unwrap();
+        let m = re.find(&s).unwrap();
+        assert_eq!(m.span(), (BitIndex::new(17, 0), BitIndex::new(28, 0)));
+    }
+
+    #[test]
+    fn find_iter() {
+        let v = vec![0x0f, 0x00, 0x01, 0x12, 0xf6, 0xc5, 0x01, 0x60];
+
+        let re = BinRegex::new("''(_+')+").unwrap();
+        let mut re_iter = re.find_iter(&v);
+        let m1 = re_iter.next().unwrap();
+        assert_eq!(m1.span(), (BitIndex::new(0, 6), BitIndex::new(4, 1)));
+        assert_eq!(m1.as_bf(), BitField::from_bin_str("11 0000 0000 0000 0001 0001 0010 1"));
+
+        let m2 = re_iter.next().unwrap();
+        assert_eq!(m2.span(), (BitIndex::new(4, 2), BitIndex::new(4, 6)));
+        assert_eq!(m2.as_bf(), BitField::from_bin_str("11 01"));
+
+        let m3 = re_iter.next().unwrap();
+        assert_eq!(m3.span(), (BitIndex::new(5, 0), BitIndex::new(7, 2)));
+        assert_eq!(m3.as_bf(), BitField::from_bin_str("1100 0101 0000 0001 01"));
+
+        let m4 = re_iter.next();
+        assert_eq!(m4, None);
     }
 }

@@ -1,9 +1,15 @@
 pub use crate::bit_field::BitField;
 
+/// Helper function for initializing [`BitIndex`](crate::BitIndex)
+pub fn bx(bits: usize) -> BitIndex {
+    BitIndex::new(bits >> 3, bits & 0x07)
+}
 
 /// Structure for accessing individual bits in any structure that implements [`BitIndexable`](crate::BitIndexable).
 ///
 /// A [`BitIndex`](crate::BitIndex) can be used to address any singular bit in an array of up to `usize` bytes. 
+/// This structure uses a `usize` to index the byte portion, and a separate `usize` to index the bit of the
+/// selected byte. 
 /// 
 /// # Examples
 ///
@@ -22,8 +28,8 @@ pub use crate::bit_field::BitField;
 /// ```
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub struct BitIndex {
-    byte_index: usize,
-    bit_index: usize
+    pub byte_index: usize,
+    pub bit_index: usize
 }
 
 impl BitIndex {
@@ -34,35 +40,33 @@ impl BitIndex {
         BitIndex {byte_index, bit_index}
     }
 
-    /// Access the bit index
+    /// Returns the bit portion of this [`BitIndex`](crate::BitIndex).
     pub fn bit(&self) -> usize {
         self.bit_index
     }
 
-    /// Returns the byte that this [`BitIndex`](crate::BitIndex) refers to.
-    ///
-    /// # Examples:
-    ///
-    /// ```rust
-    /// use bitutils2::{BitIndex};
-    ///
-    /// let mut i = BitIndex::new(2, 3);
-    /// assert_eq!(i.byte(), 2);
-    /// i += 10;
-    /// assert_eq!(i.byte(), 3);
-    /// ```
+    /// Returns the compliment of the bit portion of this [`BitIndex`](crate::BitIndex) (`8 - self.bit()`).
+    pub fn cbit(&self) -> usize {
+        8 - self.bit_index
+    }
+
+    /// Returns the byte portion of this [`BitIndex`](crate::BitIndex).
     pub fn byte(&self) -> usize {
         self.byte_index
     }
 
+    /// Sets the bit portion of this [`BitIndex`](crate::BitIndex). `bit` must be less than `8`.
     pub fn set_bit(&mut self, bit: usize) {
         self.bit_index = bit;
     }
 
+    /// Sets the byte portion of this [`BitIndex`](crate::BitIndex)
     pub fn set_byte(&mut self, byte: usize) {
         self.byte_index = byte;
     }
 
+    /// Adds `nbits` bits to this [`BitIndex`](crate::BitIndex). The bit and byte portions will
+    /// be adjusted accordingly to ensure that the bit portion is always less than `8`
     pub fn add_bits(&mut self, nbits: usize) {
         let bits = self.bit_index + nbits;
         self.bit_index = bits & 0x07;
@@ -192,12 +196,16 @@ impl BitIndexable for Vec<u8> {
                 res.push((self[i] << start_bit) | carry);
             }
         }
-        if start_bit < end_bit {
-            res.push((self[end_byte] >> (8 - end_bit)) << (start_bit + 8 - end_bit));
-        } else if end_bit < start_bit {
-            let res_len = res.len();
-            let last = res[res_len - 1];
-            res[res_len - 1] = (last >> (start_bit - end_bit)) << (start_bit - end_bit);
+        match start_bit.cmp(&end_bit) {
+            std::cmp::Ordering::Greater => {
+                let res_len = res.len();
+                let last = res[res_len - 1];
+                res[res_len - 1] = (last >> (start_bit - end_bit)) << (start_bit - end_bit);
+            },
+            std::cmp::Ordering::Less => {
+                res.push((self[end_byte] >> (8 - end_bit)) << (start_bit + 8 - end_bit));
+            },
+            _ => ()
         }
         BitField::new(res, *end - *start)
     }
