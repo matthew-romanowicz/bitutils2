@@ -891,7 +891,7 @@ fn check_state_flags<T: BitIndexable>(input: &T, flags: &Vec<StateFlag>, offset:
         match flag {
             StateFlag::GroupStart(_) | StateFlag::GroupEnd(_) => (),
             StateFlag::NotOffsetAnd(value) => {
-                if (offset.bit() & value) != 0 {
+                if (offset.bit() as usize & value) != 0 {
                     return false
                 }
             }

@@ -508,7 +508,7 @@ impl std::ops::Shl<usize> for BitField {
         }
 
         let crhs = 8 - rhs;
-        let max_bit = self.max_index().bit();
+        let max_bit = self.max_index().bit() as usize;
 
         let mut res = Vec::<u8>::new();
         for i in 0..(self.max_index().byte() - 1) {
