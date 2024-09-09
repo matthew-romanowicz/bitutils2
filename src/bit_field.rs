@@ -1,5 +1,39 @@
 use crate::bit_index::{BitIndex, BitIndexable};
 
+#[derive(Clone, Debug)]
+enum BitFieldConversionErrorKind {
+    TooLong,
+    TooShort
+}
+
+#[derive(Clone, Debug)]
+pub struct BitFieldConversionError {
+    kind: BitFieldConversionErrorKind
+}
+
+impl BitFieldConversionError {
+    fn new(kind: BitFieldConversionErrorKind) -> BitFieldConversionError {
+        BitFieldConversionError {kind}
+    }
+}
+
+impl std::fmt::Display for BitFieldConversionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            BitFieldConversionErrorKind::TooLong => write!(f, "Bitfield is too long for data type"),
+            BitFieldConversionErrorKind::TooShort => write!(f, "Bitfield is too short for data type"),
+        }
+    }    
+}
+
+pub enum IntFormat {
+    Unsigned,
+    SignMagnitude,
+    OnesCompliment,
+    TwosCompliment,
+    BaseMinusTwo
+}
+
 /// Represents a finite array of contiguous bits that supports several operations such as 
 /// indexing, slicing, shifting, etc.
 ///
@@ -307,6 +341,361 @@ impl BitField {
         }
     }
 
+    pub fn extract_u8_cyclical(&self, start: BitIndex) -> u8 {
+        if self.length.byte() == 0 {
+            todo!()
+        }
+        let start = start.rem_euclid(&self.length);
+        let i = start.byte();
+        if start.bit() == 0 {
+            if i == self.length.byte() {
+                // If the 8-bit span starts on the partial byte at the end of the field, we need
+                // to grab some bits from the start.
+                self.v[start.byte()] | self.v[0] >> self.length.bit()
+            } else {
+                self.v[start.byte()]
+            }
+        } else {
+            let res = self.v[start.byte()] << start.bit();
+            if i == self.length.byte() {
+                // 0101 0011 1010 0011 010
+                // ---- --              ^- 
+                res | (self.v[0] >> (self.length.bit() - start.bit()))
+            } else {
+                let next_byte = self.v[start.byte() + 1] >> start.cbit();
+                if start + BitIndex::new(1, 0) > self.length {
+                    //let diff = start + BitIndex::new(1, 0) - self.length;
+                    let shift = start.cbit() + self.length.bit();
+                    let first_byte = self.v[0] >> shift;//diff.cbit();
+                    res | next_byte | first_byte
+                } else {
+                    res | next_byte
+                }
+            }
+        }
+    }
+
+    pub fn into_boxed_slice(self) -> Result<Box<[u8]>, ()> {
+        if self.length.is_byte_boundary() {
+            Ok(self.v.into_boxed_slice())
+        } else {
+            Err(())
+        }
+    }
+
+    pub fn into_slice<const N: usize>(self) -> Result<[u8; N], ()> {
+        let boxed_slice = self.into_boxed_slice()?;
+        match <Box<[u8]> as TryInto<Box<[u8; N]>>>::try_into(boxed_slice) {
+            Ok(a) => Ok(*a),
+            Err(_) => Err(())
+        }
+    }
+
+    /// Converts the data contained within `self` to a big-endian unsigned
+    /// integer by removing the sign information according to the source
+    /// format provided. Returns `true` if the sign was negative before being
+    /// removed, even if the magnitude is `0`. Returns `false` if the sign was
+    /// positive, even if the magnitude is `0`.
+    ///
+    /// If the source format is `Unsigned`, then `self` is not mutated and 
+    /// `false` is returned.
+    pub fn convert_unsigned_be(&mut self, src_format: IntFormat) -> bool {
+        let mut v = Vec::<u8>::with_capacity(self.v.len());
+        let mut negative: bool;
+
+        match src_format {
+            IntFormat::SignMagnitude => {
+                negative = self.bit_at(&BitIndex::zero()) != 0;
+                self.v[0] &= 0x7f;
+            },
+            IntFormat::OnesCompliment => {
+                negative = self.bit_at(&BitIndex::zero()) != 0;
+                if negative {
+                    for b in self.v.iter_mut() {
+                        *b ^= 0xff;
+                    }
+                    if !self.length.is_byte_boundary() {
+                        let last_byte = self.v.len() - 1;
+                        self.v[last_byte] &= 0xff << self.length.cbit();
+                    }
+                }
+            },
+            IntFormat::TwosCompliment => {
+                negative = self.bit_at(&BitIndex::zero()) != 0;
+                if negative {
+                    let mut carry = true;
+                    for b in self.v.iter_mut().rev() {
+                        if carry {
+                            (*b, carry) = b.overflowing_sub(1);
+                        }
+                        *b ^= 0xff;
+                    }
+                    if !self.length.is_byte_boundary() {
+                        let last_byte = self.v.len() - 1;
+                        self.v[last_byte] &= 0xff << self.length.cbit();
+                    }
+                } 
+            },
+            IntFormat::Unsigned => {
+                negative = false
+            },
+            IntFormat::BaseMinusTwo => {
+                // If the BitField ends with an odd number of bits, then
+                // it needs to be accounted for since the bits are counted 
+                // from the LSB, so which bits are even and odd will be switched 
+                let odd_bits = self.length.bit() & 0x01 != 0;
+
+                // Iterate through from the most significant to least
+                // significant bytes to tell whether the highest value
+                // bit is negative or positive. This will determine the
+                // sign of the result. Also record the location of the
+                // MSB so that we can save some iterations in the subtration
+                negative = false;
+                let mut num_significant_bytes = self.v.len();
+                for (i, b) in self.v.iter().enumerate() {
+                    if *b != 0 {
+                        negative = ((*b & 0xaa) > (*b & 0x55)) ^ odd_bits;
+                        num_significant_bytes -= i;
+                        break;
+                    }
+                }
+
+                // Subtract the even bits from the odd bits if positive,
+                // and vice versa if negative to guarantee a positive result.
+                let mut carry = false;
+                let mut minuend;
+                let mut subtrahend;
+                for b in self.v.iter_mut().rev().take(num_significant_bytes) {
+                    (minuend, subtrahend) = match negative ^ odd_bits {
+                        true => (*b & 0xaa, *b & 0x55),
+                        false => (*b & 0x55, *b & 0xaa)
+                    };
+                    if carry {
+                        subtrahend += 1;
+                    }
+                    (*b, carry) = minuend.overflowing_sub(subtrahend);
+                    
+                }
+            }
+        };
+
+        return negative
+    }
+
+    /// Pads `self` to the specified length in such a way that when interpreted
+    /// as an unsigned big-endian integer, the value is unchanged. More specifically,
+    /// `self` is extended to the new length by padding the left side with zeros.
+    /// 
+    /// Does nothing if the provided length is less than or equal to `self`'s current
+    /// length.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_vec(vec![0x30, 0x39]);
+    /// assert_eq!(u16::from_be_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// bf.pad_unsigned_be(BitIndex::bits(32));
+    /// assert_eq!(u32::from_be_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// bf.pad_unsigned_be(BitIndex::bits(64));
+    /// assert_eq!(u64::from_be_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///```
+    pub fn pad_unsigned_be(&mut self, new_length: BitIndex) {
+        if self.length < new_length {
+            let delta = new_length - self.length;
+            let pad = BitField::zeros(&delta);
+            let original = std::mem::replace(self, pad);
+            self.extend(&original);
+        }
+    }
+
+    /// Pads `self` to the specified length in such a way that when interpreted
+    /// as an unsigned little-endian integer, the value is unchanged. More specifically,
+    /// `self` is extended to the new length by padding the right side with zeros
+    /// and, if `self` doesn't currently end on a byte boundary, shifting the contents
+    /// of the last partial byte so that they retain the same significance
+    /// 
+    /// Does nothing if the provided length is less than or equal to `self`'s current
+    /// length.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_vec(vec![0x39, 0x30]);
+    /// assert_eq!(u16::from_le_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// bf.pad_unsigned_le(BitIndex::bits(32));
+    /// assert_eq!(u32::from_le_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// bf.pad_unsigned_le(BitIndex::bits(64));
+    /// assert_eq!(u64::from_le_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///```
+    pub fn pad_unsigned_le(&mut self, new_length: BitIndex) {
+        if self.length < new_length {
+
+            // Pad the left side with zeros to he new length
+            let pad = BitField::zeros(&(new_length - self.length));
+            let old_length = self.length.clone();
+            self.extend(&pad);
+
+
+            if !old_length.is_byte_boundary() {
+                // If `self` ended in a partial byte, that data will need to be
+                // shifted so that it retains the same significance.
+                let shift: u8;
+                if new_length.byte() > old_length.byte() {
+                    // If a new byte was added, push the partial byte at the end 
+                    // of the original to the LSB position
+                    shift = old_length.cbit();
+                } else {
+                    // If a new byte hasn't been added, push the partial byte at
+                    // the end to the new LSB position (not the end of the byte)
+                    shift = new_length.bit() - old_length.bit();
+                }
+                self.v[old_length.byte()] = self.v[old_length.byte()] >> shift;
+            }
+        }
+    }
+
+    /// Pads `self` to the specified length in such a way that when interpreted
+    /// as an signed twos-compliment big-endian integer, the value is unchanged. 
+    /// More specifically, `self` is extended to the new length by padding the left 
+    /// side with either zeros or ones depending on the value of the most significant
+    /// bit. 
+    /// 
+    /// Does nothing if the provided length is less than or equal to `self`'s current
+    /// length.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_vec(vec![0x30, 0x39]);
+    /// assert_eq!(i16::from_be_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// bf.pad_twos_compliment_be(BitIndex::bits(32));
+    /// assert_eq!(i32::from_be_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// bf.pad_twos_compliment_be(BitIndex::bits(64));
+    /// assert_eq!(i64::from_be_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// let mut bf = BitField::from_vec(vec![0xcf, 0xc7]);
+    /// assert_eq!(i16::from_be_bytes(bf.clone().into_slice().unwrap()), -12345);
+    ///
+    /// bf.pad_twos_compliment_be(BitIndex::bits(32));
+    /// assert_eq!(i32::from_be_bytes(bf.clone().into_slice().unwrap()), -12345);
+    ///
+    /// bf.pad_twos_compliment_be(BitIndex::bits(64));
+    /// assert_eq!(i64::from_be_bytes(bf.clone().into_slice().unwrap()), -12345);
+    ///```
+    pub fn pad_twos_compliment_be(&mut self, new_length: BitIndex) {
+        if self.length < new_length {
+            let delta = new_length - self.length;
+            let pad = if self.bit_at(&BitIndex::zero()) == 0 {
+                BitField::zeros(&delta)
+            } else {
+                BitField::ones(&delta)
+            };
+            let original = std::mem::replace(self, pad);
+            self.extend(&original);
+        }
+    }
+
+    /// Pads `self` to the specified length in such a way that when interpreted
+    /// as an signed twos-compliment little-endian integer, the value is unchanged. 
+    /// More specifically, `self` is extended to the new length by padding the right 
+    /// side with either zeros or ones depending on the value of the most significant
+    /// byte. In addition, if `self` doesn't currently end on a byte boundary, 
+    /// shifting the contents of the last partial byte so that they retain the same 
+    /// significance.
+    /// 
+    /// Does nothing if the provided length is less than or equal to `self`'s current
+    /// length.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_vec(vec![0x39, 0x30]);
+    /// assert_eq!(i16::from_le_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// bf.pad_twos_compliment_le(BitIndex::bits(32));
+    /// assert_eq!(i32::from_le_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// bf.pad_twos_compliment_le(BitIndex::bits(64));
+    /// assert_eq!(i64::from_le_bytes(bf.clone().into_slice().unwrap()), 12345);
+    ///
+    /// let mut bf = BitField::from_vec(vec![0xc7, 0xcf]);
+    /// assert_eq!(i16::from_le_bytes(bf.clone().into_slice().unwrap()), -12345);
+    ///
+    /// bf.pad_twos_compliment_le(BitIndex::bits(32));
+    /// assert_eq!(i32::from_le_bytes(bf.clone().into_slice().unwrap()), -12345);
+    ///
+    /// bf.pad_twos_compliment_le(BitIndex::bits(64));
+    /// assert_eq!(i64::from_le_bytes(bf.clone().into_slice().unwrap()), -12345);
+    ///```
+    pub fn pad_twos_compliment_le(&mut self, new_length: BitIndex) {
+        if self.length < new_length {
+
+            let sign_index = if self.length.is_byte_boundary() {
+                BitIndex::new(self.length.byte() - 1, 0)
+            } else {
+                BitIndex::new(self.length.byte(), 0)
+            };
+
+            let negative = self.bit_at(&sign_index) != 0;
+
+            let old_length = self.length.clone();
+
+
+            // Determine how many bytes to add after the current byte (even if it's partial)
+            let new_bytes = new_length.ceil().byte() - self.v.len();
+
+            // If the number is negative, pad out the new bytes with 1
+            if negative {
+                self.v.extend(vec![0xff; new_bytes]);
+                let last_byte = self.v.len() - 1;
+                if !new_length.is_byte_boundary() {
+                    // If the new length has a partial byte, zero out the extra bits
+                    self.v[last_byte] &= 0xff << new_length.cbit();
+                }
+            } else {
+                self.v.extend(vec![0x00; new_bytes]);
+            }
+            // Update the length to account for the new bytes added
+            self.length = new_length;
+            
+
+
+            if !old_length.is_byte_boundary() {
+                // If `self` ended in a partial byte, that data will need to be
+                // shifted so that it retains the same significance.
+                let shift: u8;
+                if new_length.byte() > old_length.byte() {
+                    // If a new byte was added, push the partial byte at the end 
+                    // of the original to the LSB position
+                    shift = old_length.cbit();
+                } else {
+                    // If a new byte hasn't been added, push the partial byte at
+                    // the end to the new LSB position (not the end of the byte)
+                    shift = new_length.bit() - old_length.bit();
+                }
+
+                // If the number is negative, shift the data in the last byte over
+                // and fill in with ones. Otherwise, don't fill.
+                if negative {
+                    self.v[old_length.byte()] = 0xff << (8 - shift) | (self.v[old_length.byte()] >> shift);
+                } else {
+                    self.v[old_length.byte()] = self.v[old_length.byte()] >> shift;
+                }
+                
+            }
+        }
+    }
+
 }
 
 impl BitIndexable for BitField {
@@ -353,6 +742,12 @@ impl BitIndexable for BitField {
     }
 }
 
+impl Default for BitField {
+    fn default() -> BitField {
+        BitField::new(vec![], BitIndex::zero())
+    }
+}
+
 impl std::cmp::PartialEq for BitField {
     fn eq(&self, other: &Self) -> bool {
         if self.len() != other.len() {
@@ -392,7 +787,7 @@ impl std::ops::BitAnd for &BitField  {
     ///```
     fn bitand(self, rhs: &BitField) -> BitField {
         let min_len = std::cmp::min(self.len(), rhs.len());
-        let end = if min_len.bit() != 0 {min_len.byte() + 1} else {min_len.byte()};
+        let end = min_len.ceil().byte();
         let mut res = Vec::<u8>::with_capacity(end);
         for i in 0..end {
             res.push(self.v[i] & rhs.v[i]);
@@ -418,7 +813,7 @@ impl std::ops::BitOr for &BitField {
     ///```
     fn bitor(self, rhs: &BitField) -> BitField {
         let min_len = std::cmp::min(self.len(), rhs.len());
-        let end = if min_len.bit() != 0 {min_len.byte() + 1} else {min_len.byte()};
+        let end = min_len.ceil().byte();
         let mut res = Vec::<u8>::with_capacity(end);
         for i in 0..end {
             res.push(self.v[i] | rhs.v[i]);
@@ -447,7 +842,7 @@ impl std::ops::BitXor for &BitField {
     ///```
     fn bitxor(self, rhs: &BitField) -> BitField {
         let min_len = std::cmp::min(self.len(), rhs.len());
-        let end = if min_len.bit() != 0 {min_len.byte() + 1} else {min_len.byte()};
+        let end = min_len.ceil().byte();
         let mut res = Vec::<u8>::with_capacity(end);
         for i in 0..end {
             res.push(self.v[i] ^ rhs.v[i]);
@@ -473,7 +868,7 @@ impl std::ops::Not for &BitField {
     /// assert_eq!(!&bf, BitField::from_bin_str("1100 0101 1111 0000 0011 1010 1000"));
     ///```
     fn not(self) -> BitField {
-        let end = if self.length.bit() != 0 {self.length.byte() + 1} else {self.length.byte()};
+        let end = self.length.ceil().byte();
         let mut res = Vec::<u8>::with_capacity(end);
         for i in 0..end {
             res.push(!self.v[i]);
@@ -490,7 +885,7 @@ impl std::ops::Shl<usize> for BitField {
     type Output = Self;
 
     /// Returns a [`BitField`](crate::BitField) with the bits shifted left by `rhs` bits.
-    /// Bits that are dropped off the left side are wrapped around to will the right side.
+    /// Bits that are dropped off the left side are wrapped around to fill the right side.
     ///
     /// # Examples
     ///```rust
@@ -529,6 +924,46 @@ impl std::ops::Shl<usize> for BitField {
         }
         
         BitField {v: res, length: self.len()}
+    }
+
+}
+
+impl std::ops::Shr<usize> for BitField {
+    type Output = Self;
+
+    /// Returns a [`BitField`](crate::BitField) with the bits shifted right by `rhs` bits.
+    /// Bits that are dropped off the right side are wrapped around to fill the left side.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let bf = BitField::from_bin_str("1100 0000 1111 00");
+    /// let bf = bf >> 2;
+    /// assert_eq!(bf, BitField::from_bin_str("0011 0000 0011 11"));
+    /// let bf = bf >> 4;
+    /// assert_eq!(bf, BitField::from_bin_str("1111 0011 0000 00"));
+    ///```
+    fn shr(self, rhs: usize) -> Self::Output {
+        if rhs == 0 {
+            return self;
+        }
+
+        let shift = BitIndex::bits(rhs);
+
+        let mut v = Vec::<u8>::with_capacity(self.v.len());
+
+
+        for i in 0..self.v.len() {
+            let bi = BitIndex::bytes(i) - shift;
+            v.push(self.extract_u8_cyclical(bi));
+        }
+
+        if !self.length.is_byte_boundary() {
+            v[self.length.byte()] = (v[self.length.byte()] >> self.length.cbit()) << self.length.cbit();
+        }
+        
+        BitField::new(v, self.length)
     }
 
 }
@@ -684,6 +1119,14 @@ mod bit_field_tests {
         assert_eq!(bf.clone() << 4, BitField::from_vec(vec![0x00, 0x0A, 0xB0, 0xF0]));
         assert_eq!(bf.clone() << 6, (bf.clone() << 4) << 2);
         assert_eq!(bf.clone() << 0, bf.clone());
+
+        // let bf = BitField::from_bin_str("1100 0000 1111 00");
+        // let bf = bf >> 2;
+        // assert_eq!(bf, BitField::from_bin_str("0011 0000 0011 11"));
+        // let bf = bf >> 4;
+        // assert_eq!(bf, BitField::from_bin_str("1100 1100 0000 11"));
+        let bf = BitField::from_hex_str("AB CD EF 7");
+        assert_eq!(bf.clone() >> 12, BitField::from_hex_str("EF 7A BC D"));
     }
 
     #[test]
@@ -776,5 +1219,205 @@ mod bit_field_tests {
         assert_eq!(bf.extract_u8(BitIndex::new(0, 6)), 0x29);
         assert_eq!(bf.extract_u8(BitIndex::new(0, 7)), 0x52);
         assert_eq!(bf.extract_u8(BitIndex::new(1, 0)), 0xa5);
+
+        let bf = BitField::from_bin_str("0011 1000 1010 0101 11");
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(0, 0)), 0x38);
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(0, 2)), 0xe2);
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(0, 4)), 0x8a);
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(0, 6)), 0x29);
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(1, 0)), 0xa5);
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(1, 2)), 0x97);
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(1, 4)), 0x5c);
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(1, 6)), 0x73);
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(2, 0)), 0xce);
+
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(2, 2)), 0x38);
+        assert_eq!(bf.extract_u8_cyclical(BitIndex::new(3, 4)), 0x97);
+
+        assert_eq!(bf.extract_u8_cyclical(-BitIndex::new(0, 4)), 0x73);
+    }
+
+    #[test]
+    fn pad_unsigned() {
+        let mut bf = BitField::from_bin_str("1010 0011 10");
+        bf.pad_unsigned_le(BitIndex::new(1, 3));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 010"));
+        bf.pad_unsigned_le(BitIndex::new(1, 4));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0010"));
+        bf.pad_unsigned_le(BitIndex::new(1, 5));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0001 0"));
+        bf.pad_unsigned_le(BitIndex::new(1, 6));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 10"));
+        bf.pad_unsigned_le(BitIndex::new(1, 7));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 010"));
+        bf.pad_unsigned_le(BitIndex::new(2, 0));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 0010"));
+
+        bf.pad_unsigned_le(BitIndex::new(2, 4));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 0010 0000"));
+        bf.pad_unsigned_le(BitIndex::new(3, 0));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 0010 0000 0000"));
+
+        let mut bf = BitField::from_bin_str("1010 0011");
+        bf.pad_unsigned_le(BitIndex::new(1, 4));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000"));
+
+        let mut bf = BitField::from_bin_str("1010 0011 10");
+        bf.pad_unsigned_be(BitIndex::new(1, 3));
+        assert_eq!(bf, BitField::from_bin_str("0101 0001 110"));
+        bf.pad_unsigned_be(BitIndex::new(1, 4));
+        assert_eq!(bf, BitField::from_bin_str("0010 1000 1110"));
+        bf.pad_unsigned_be(BitIndex::new(1, 5));
+        assert_eq!(bf, BitField::from_bin_str("0001 0100 0111 0"));
+        bf.pad_unsigned_be(BitIndex::new(1, 6));
+        assert_eq!(bf, BitField::from_bin_str("0000 1010 0011 10"));
+        bf.pad_unsigned_be(BitIndex::new(1, 7));
+        assert_eq!(bf, BitField::from_bin_str("0000 0101 0001 110"));
+        bf.pad_unsigned_be(BitIndex::new(2, 0));
+        assert_eq!(bf, BitField::from_bin_str("0000 0010 1000 1110"));
+
+        bf.pad_unsigned_be(BitIndex::new(2, 4));
+        assert_eq!(bf, BitField::from_bin_str("0000 0000 0010 1000 1110"));
+        bf.pad_unsigned_be(BitIndex::new(3, 0));
+        assert_eq!(bf, BitField::from_bin_str("0000 0000 0000 0010 1000 1110"));
+
+        let mut bf = BitField::from_bin_str("1010 0011");
+        bf.pad_unsigned_be(BitIndex::new(1, 4));
+        assert_eq!(bf, BitField::from_bin_str("0000 1010 0011"));
+    }
+
+    #[test]
+    fn pad_twos_compliment() {
+        // Negative little-endian
+        let mut bf = BitField::from_bin_str("1010 0011 10");
+        bf.pad_twos_compliment_le(BitIndex::new(1, 3));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 110"));
+        bf.pad_twos_compliment_le(BitIndex::new(1, 4));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 1110"));
+        bf.pad_twos_compliment_le(BitIndex::new(1, 5));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 1111 0"));
+        bf.pad_twos_compliment_le(BitIndex::new(1, 6));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 1111 10"));
+        bf.pad_twos_compliment_le(BitIndex::new(1, 7));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 1111 110"));
+        bf.pad_twos_compliment_le(BitIndex::new(2, 0));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 1111 1110"));
+
+        bf.pad_twos_compliment_le(BitIndex::new(2, 4));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 1111 1110 1111"));
+        bf.pad_twos_compliment_le(BitIndex::new(3, 0));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 1111 1110 1111 1111"));
+
+        let mut bf = BitField::from_bin_str("1010 0011");
+        bf.pad_twos_compliment_le(BitIndex::new(1, 4));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 1111"));
+
+        // Positive little-endian
+        let mut bf = BitField::from_bin_str("1010 0011 01");
+        bf.pad_twos_compliment_le(BitIndex::new(1, 3));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 001"));
+        bf.pad_twos_compliment_le(BitIndex::new(1, 4));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0001"));
+        bf.pad_twos_compliment_le(BitIndex::new(1, 5));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 1"));
+        bf.pad_twos_compliment_le(BitIndex::new(1, 6));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 01"));
+        bf.pad_twos_compliment_le(BitIndex::new(1, 7));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 001"));
+        bf.pad_twos_compliment_le(BitIndex::new(2, 0));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 0001"));
+
+        bf.pad_twos_compliment_le(BitIndex::new(2, 4));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 0001 0000"));
+        bf.pad_twos_compliment_le(BitIndex::new(3, 0));
+        assert_eq!(bf, BitField::from_bin_str("1010 0011 0000 0001 0000 0000"));
+
+        let mut bf = BitField::from_bin_str("0110 0011");
+        bf.pad_twos_compliment_le(BitIndex::new(1, 4));
+        assert_eq!(bf, BitField::from_bin_str("0110 0011 0000"));
+    }
+
+    #[test]
+    fn int_conversions() {
+        let mut bf = BitField::from_hex_str("00 01 e2 40"); // +123456 in sign-magnitude
+        assert_eq!(bf.convert_unsigned_be(IntFormat::SignMagnitude), false);
+        assert_eq!(u32::from_be_bytes(bf.into_slice().unwrap()), 123456);
+
+        let mut bf = BitField::from_hex_str("80 01 e2 40"); // -123456 in sign-magnitude
+        assert_eq!(bf.convert_unsigned_be(IntFormat::SignMagnitude), true);
+        assert_eq!(u32::from_be_bytes(bf.into_slice().unwrap()), 123456);
+
+        let mut bf = BitField::from_hex_str("00 01 e2 40"); // +123456 in two's complement
+        assert_eq!(bf.convert_unsigned_be(IntFormat::TwosCompliment), false);
+        assert_eq!(u32::from_be_bytes(bf.into_slice().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("00 01 e2 40"); // +123456 in two's complement
+            bf.pad_twos_compliment_be(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_be(IntFormat::TwosCompliment), false);
+            bf.pad_unsigned_be(BitIndex::new(8, 0));
+            assert_eq!(u64::from_be_bytes(bf.into_slice().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("ff fe 1d c0"); // -123456 in two's complement
+        assert_eq!(bf.convert_unsigned_be(IntFormat::TwosCompliment), true);
+        assert_eq!(u32::from_be_bytes(bf.into_slice().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("ff fe 1d c0"); // -123456 in two's complement
+            bf.pad_twos_compliment_be(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_be(IntFormat::TwosCompliment), true);
+            bf.pad_unsigned_be(BitIndex::new(8, 0));
+            assert_eq!(u64::from_be_bytes(bf.into_slice().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("00 01 e2 40"); // +123456 in one's complement
+        assert_eq!(bf.convert_unsigned_be(IntFormat::OnesCompliment), false);
+        assert_eq!(u32::from_be_bytes(bf.into_slice().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("00 01 e2 40"); // +123456 in one's complement
+            bf.pad_twos_compliment_be(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_be(IntFormat::OnesCompliment), false);
+            bf.pad_unsigned_be(BitIndex::new(8, 0));
+            assert_eq!(u64::from_be_bytes(bf.into_slice().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("ff fe 1d bf"); // -123456 in one's complement
+        assert_eq!(bf.convert_unsigned_be(IntFormat::OnesCompliment), true);
+        assert_eq!(u32::from_be_bytes(bf.into_slice().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("ff fe 1d bf"); // -123456 in one's complement
+            bf.pad_twos_compliment_be(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_be(IntFormat::OnesCompliment), true);
+            bf.pad_unsigned_be(BitIndex::new(8, 0));
+            assert_eq!(u64::from_be_bytes(bf.into_slice().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("00 06 26 40"); // +123456 in base -2
+        assert_eq!(bf.convert_unsigned_be(IntFormat::BaseMinusTwo), false);
+        assert_eq!(u32::from_be_bytes(bf.into_slice().unwrap()), 123456);
+
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("00 06 26 40"); // +123456 in base -2
+            bf.pad_unsigned_be(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_be(IntFormat::BaseMinusTwo), false);
+            bf.pad_unsigned_be(BitIndex::new(8, 0));
+            assert_eq!(u64::from_be_bytes(bf.into_slice().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("00 02 62 c0"); // -123456 in base -2
+        assert_eq!(bf.convert_unsigned_be(IntFormat::BaseMinusTwo), true);
+        assert_eq!(u32::from_be_bytes(bf.into_slice().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("00 02 62 c0"); // -123456 in base -2
+            bf.pad_unsigned_be(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_be(IntFormat::BaseMinusTwo), true);
+            bf.pad_unsigned_be(BitIndex::new(8, 0));
+            assert_eq!(u64::from_be_bytes(bf.into_slice().unwrap()), 123456);
+        }
     }
 }  

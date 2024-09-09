@@ -209,6 +209,12 @@ impl BitIndex {
         matches!(self.sign, Sign::Negative) && !self.is_zero()
     }
 
+    /// Returns `true` if `self` lies on a byte boundary and `false` otherwise. Functionally
+    /// equivalent to `self.bit() == 0`
+    pub fn is_byte_boundary(&self) -> bool {
+        self.bit == 0
+    }
+
     /// Returns the bit portion of this [`BitIndex`](crate::BitIndex).
     pub fn byte(&self) -> usize {
         self.byte
@@ -222,6 +228,45 @@ impl BitIndex {
     /// Returns the compliment of the bit portion of this [`BitIndex`](crate::BitIndex) (`8 - self.bit()`).
     pub fn cbit(&self) -> u8 {
         8 - self.bit
+    }
+
+    pub fn total_bits(&self) -> i128 {
+        let bits = ((self.byte as i128) << 3) + self.bit as i128;
+        match self.sign {
+            Sign::Positive => bits,
+            Sign::Negative => -bits
+        }
+    }
+
+    /// Returns a new [`BitIndex`](crate::BitIndex) the corresponds to
+    /// the nearest byte boundary greater than or equal to `self`. 
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bitutils2::BitIndex;
+    ///
+    /// assert_eq!(BitIndex::new(4, 2).ceil(), BitIndex::new(5, 0));
+    ///
+    /// assert_eq!(BitIndex::new(4, 0).ceil(), BitIndex::new(4, 0));
+    ///
+    /// // Negative case
+    /// assert_eq!((-BitIndex::new(1, 2)).ceil(), -BitIndex::new(1, 0));
+    ///
+    /// ```
+    pub fn ceil(&self) -> BitIndex {
+        if self.is_byte_boundary() {
+            self.clone()
+        } else {
+            match self.sign {
+                Sign::Positive => {
+                    BitIndex::new(self.byte() + 1, 0)
+                },
+                Sign::Negative => {
+                    -BitIndex::new(self.byte(), 0)
+                }
+            }
+        }
     }
 
     /// Sets the bit portion of this [`BitIndex`](crate::BitIndex). `bit` must be less than `8`.
@@ -544,6 +589,22 @@ impl std::ops::AddAssign<&usize> for BitIndex {
 //     }
 // }
 
+impl std::ops::Mul<i128> for BitIndex {
+    type Output = Self;
+
+    // Required method
+    fn mul(self, rhs: i128) -> Self::Output {
+        let total_bits = self.total_bits() * rhs;
+        if total_bits < 0 {
+            -BitIndex::new((total_bits.abs() >> 3) as usize, (total_bits.abs() & 0x07) as u8)
+        } else {
+            BitIndex::new((total_bits >> 3) as usize, (total_bits & 0x07) as u8)
+        }
+        
+
+    }
+}
+
 pub trait BitIndexable {
 
     /// Get the bit at the given bit index. Returns a `u8` instead of a `bool` to accommodate 
@@ -685,7 +746,13 @@ mod bit_index_tests {
         assert!(matches!(err_kind, BitIndexErrorKind::InvalidCharacter(3)));
     }
 
-        #[test]
+    #[test]
+    fn total_bits_test() {
+        assert_eq!(BitIndex::new(3, 6).total_bits(), 30);
+        assert_eq!((-BitIndex::new(3, 6)).total_bits(), -30);
+    }
+
+    #[test]
     fn add_test() {
         assert_eq!(BitIndex::new(2, 3) + BitIndex::new(1, 3), BitIndex::new(3, 6));
         assert_eq!(BitIndex::new(0, 3) + BitIndex::new(4, 5), BitIndex::new(5, 0));
@@ -706,6 +773,16 @@ mod bit_index_tests {
         assert_eq!(BitIndex::new(5, 2) - BitIndex::new(5, 5), -BitIndex::new(0, 3));
         assert_eq!(BitIndex::new(3, 2) - BitIndex::new(5, 5), -BitIndex::new(2, 3));
         assert_eq!(BitIndex::new(3, 5) - BitIndex::new(5, 3), -BitIndex::new(1, 6));
+    }
+
+    #[test]
+    fn mul_test() {
+        assert_eq!(BitIndex::new(3, 6) * 15, BitIndex::new(56, 2));
+        assert_eq!(BitIndex::new(0, 0) * 1000, BitIndex::new(0, 0));
+        assert_eq!(BitIndex::new(15, 1) * 1000, BitIndex::new(15125, 0));
+        assert_eq!(BitIndex::new(15, 1) * -1000, -BitIndex::new(15125, 0));
+        assert_eq!((-BitIndex::new(15, 1)) * 1000, -BitIndex::new(15125, 0));
+        assert_eq!((-BitIndex::new(15, 1)) * -1000, BitIndex::new(15125, 0));
     }
 
     #[test]
