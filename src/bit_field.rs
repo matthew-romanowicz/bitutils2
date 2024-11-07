@@ -1565,11 +1565,12 @@ mod bit_field_tests {
         // let bf = bf >> 4;
         // assert_eq!(bf, BitField::from_bin_str("1100 1100 0000 11"));
         let bf = BitField::from_hex_str("AB CD EF 7");
+        assert_eq!(bf.clone() >> 4, BitField::from_hex_str("7A BC DE F"));
         assert_eq!(bf.clone() >> 12, BitField::from_hex_str("EF 7A BC D"));
     }
 
     #[test]
-    fn shifts2() {
+    fn left_shifts() {
         let bf = BitField::from_bin_str("1010 1111 0000 0101 0011");
         assert_eq!(bf.clone() << 2, BitField::from_bin_str("1011 1100 0001 0100 1110"));
         assert_eq!(bf.clone() << 4, BitField::from_bin_str("1111 0000 0101 0011 1010"));
@@ -1587,6 +1588,29 @@ mod bit_field_tests {
 
         let bf = BitField::from_bin_str("1010 1111 0000 0101 0011 110");
         assert_eq!(bf.clone() << 1 << 2 << 3 << 4 << 5 << 6 << 7, bf.clone() << 5);
+        // println!("{:?}", bf.clone() << 6);
+        // todo!();
+    }
+
+    #[test]
+    fn right_shifts() {
+        let bf = BitField::from_bin_str("1010 1111 0000 0101 0011");
+        assert_eq!(bf.clone() >> 2, BitField::from_bin_str("1110 1011 1100 0001 0100"));
+        assert_eq!(bf.clone() >> 4, BitField::from_bin_str("0011 1010 1111 0000 0101"));
+        assert_eq!(bf.clone() >> 6, BitField::from_bin_str("0100 1110 1011 1100 0001"));
+
+        let bf = BitField::from_bin_str("1010 1111 0000 0101 01");
+        assert_eq!(bf.clone() >> 1, BitField::from_bin_str("1101 0111 1000 0010 10"));
+        assert_eq!(bf.clone() >> 3, BitField::from_bin_str("1011 0101 1110 0000 10"));
+        assert_eq!(bf.clone() >> 5, BitField::from_bin_str("1010 1101 0111 1000 00"));
+
+        let bf = BitField::from_bin_str("1010 1111 0000 0101 0011 11");
+        assert_eq!(bf.clone() >> 2, BitField::from_bin_str("1110 1011 1100 0001 0100 11"));
+        assert_eq!(bf.clone() >> 4, BitField::from_bin_str("1111 1010 1111 0000 0101 00"));
+        assert_eq!(bf.clone() >> 6, BitField::from_bin_str("0011 1110 1011 1100 0001 01"));
+
+        let bf = BitField::from_bin_str("1010 1111 0000 0101 0011 110");
+        assert_eq!(bf.clone() >> 1 >> 2 >> 3 >> 4 >> 5 >> 6 >> 7, bf.clone() >> 5);
         // println!("{:?}", bf.clone() << 6);
         // todo!();
     }
