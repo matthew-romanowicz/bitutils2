@@ -199,12 +199,12 @@ impl BitIndex {
         self.byte == 0 && self.bit == 0
     }
 
-    /// Returns `true` if `self` is positive and `false` if self is zero or negative
+    /// Returns `true` if `self` is positive and `false` if `self` is zero or negative
     pub fn is_positive(&self) -> bool {
         matches!(self.sign, Sign::Positive) && !self.is_zero()
     }
 
-    /// Returns `true` if `self` is negative and `false` if self is zero or positive
+    /// Returns `true` if `self` is negative and `false` if `self` is zero or positive
     pub fn is_negative(&self) -> bool {
         matches!(self.sign, Sign::Negative) && !self.is_zero()
     }
@@ -387,6 +387,13 @@ impl FromStr for BitIndex {
             Ok(BitIndex{sign, byte, bit})
         }
 
+    }
+}
+
+impl std::fmt::Display for BitIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let temp_str = format!("{}B{}b", self.byte(), self.bit());
+        f.pad_integral(!self.is_negative(), "", &temp_str)
     }
 }
 
@@ -605,6 +612,35 @@ impl std::ops::Mul<i128> for BitIndex {
     }
 }
 
+
+impl std::ops::Div<&BitIndex> for BitIndex {
+    type Output = i128;
+
+    /// Performs integer division between `self` and `rhs`. Returns the largest integer
+    /// by which `self` can be multiplied such that `self <= rhs`. Output is negative if
+    /// exactly one of the inputs is negative. Panics if `rhs` is zero.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bitutils2::BitIndex;
+    ///
+    /// assert_eq!(BitIndex::new(4, 2) / &BitIndex::new(2, 1), 2);
+    /// assert_eq!(BitIndex::new(4, 1) / &BitIndex::new(2, 1), 1);
+    /// assert_eq!(BitIndex::new(403, 2) / &BitIndex::new(100, 0), 4);
+    ///
+    /// // Negative case
+    /// assert_eq!(-BitIndex::new(4, 2) / &BitIndex::new(2, 1), -2);
+    /// assert_eq!(-BitIndex::new(4, 2) / &-BitIndex::new(2, 1), 2);
+    ///
+    /// ```
+    fn div(self, rhs: &BitIndex) -> Self::Output {
+
+        self.total_bits() / rhs.total_bits()
+        
+    }
+}
+
 pub trait BitIndexable {
 
     /// Get the bit at the given bit index. Returns a `u8` instead of a `bool` to accommodate 
@@ -683,6 +719,26 @@ impl BitIndexable for Vec<u8> {
 #[cfg(test)]
 mod bit_index_tests {
     use super::*;
+
+    #[test]
+    fn display_test() {
+        assert_eq!(format!("{}", BitIndex::new(5, 3)), "5B3b");
+        assert_eq!(format!("{}", BitIndex::new(185, 7)), "185B7b");
+        assert_eq!(format!("{}", -BitIndex::new(5, 3)), "-5B3b");
+        assert_eq!(format!("{}", -BitIndex::new(185, 7)), "-185B7b");
+
+        assert_eq!(format!("{:-}", BitIndex::new(5, 3)), "5B3b");
+        assert_eq!(format!("{:-}", BitIndex::new(185, 7)), "185B7b");
+        assert_eq!(format!("{:-}", -BitIndex::new(5, 3)), "-5B3b");
+        assert_eq!(format!("{:-}", -BitIndex::new(185, 7)), "-185B7b");
+
+        assert_eq!(format!("{:+}", BitIndex::new(5, 3)), "+5B3b");
+        assert_eq!(format!("{:+}", BitIndex::new(185, 7)), "+185B7b");
+        assert_eq!(format!("{:+}", -BitIndex::new(5, 3)), "-5B3b");
+        assert_eq!(format!("{:+}", -BitIndex::new(185, 7)), "-185B7b");
+
+        assert_eq!(format!("{:0>8}", BitIndex::new(5, 3)), "00005B3b");
+    }
 
     #[test]
     fn parse_test() {

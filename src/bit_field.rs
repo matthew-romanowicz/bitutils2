@@ -323,7 +323,7 @@ impl BitField {
         self.length = self.length + other.length;
     }
 
-    /// Repeats a bitfiled `n` times. If `n` is `0`, the bitfield is cleared and if `n` is 1, the bitfield
+    /// Repeats a [`BitField`](crate::BitField) `n` times. If `n` is `0`, the bitfield is cleared and if `n` is 1, the bitfield
     /// is unmodified. Otherwise, the bitfield is extended such that it's contents repeat `n` times and its
     /// length is multiplied by `n`.
     pub fn repeat(&mut self, n: usize) {
@@ -337,6 +337,38 @@ impl BitField {
                 }
             }
         }
+    }
+
+    /// Extends `self` to the new provided length by repeating as many times as needed to fill the new length. Final repetition is
+    /// truncated to the specified length. If the specified length is less than `self`'s current length, then `self` is truncated
+    /// to the new length.
+    ///
+    /// Panics if the provided length is negative or if `self` is empty.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_bin_str("0101 1100 11");
+    /// bf.repeat_until(&BitIndex::new(5, 4));
+    /// assert_eq!(bf, BitField::from_bin_str("0101 1100 1101 0111 0011 0101 1100 1101 0111 0011 0101"));
+    ///
+    /// // If the new length is less than the current length, then self is truncated.
+    /// bf.repeat_until(&BitIndex::new(0, 6));
+    /// assert_eq!(bf, BitField::from_bin_str("0101 11"));
+    ///```
+    pub fn repeat_until(&mut self, new_length: &BitIndex) {
+        if new_length.is_negative() {
+            panic!("Negative length provided for repeat_until: {}", new_length);
+        }
+        if self.is_empty() {
+            panic!("Empty BitField provided for repeat_until")
+        }
+        let n = *new_length / &self.length;
+        
+        self.repeat(n as usize + 1);
+        self.truncate(new_length);
+        
     }
 
     /// Swaps the byte order of `self` from litte-endian to big-endian. Does nothing
