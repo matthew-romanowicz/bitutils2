@@ -1235,14 +1235,48 @@ impl std::ops::BitAnd for &BitField  {
     /// assert_eq!(&bf1 & &bf2, BitField::from_bin_str("0001 0000 0000 0111 1000 0101 0001"));
     ///```
     fn bitand(self, rhs: &BitField) -> BitField {
+        // Figure out the number of bytes for the shortest input and generate a new vector with that
+        // capacity
         let min_len = std::cmp::min(self.len(), rhs.len());
         let end = min_len.ceil().byte();
         let mut res = Vec::<u8>::with_capacity(end);
+
+        // Perform the bitwise operation on all bytes
         for i in 0..end {
             res.push(self.v[i] & rhs.v[i]);
         }
         // No need to clear bits past the end of the length since the & operation should zero them out
         BitField {v: res, length: min_len}
+    }
+}
+
+impl std::ops::BitAndAssign<&BitField> for BitField  {
+
+    /// Transforms `self` to have the value of `self & rhs`. If the two inputs have different lengths,
+    /// then the resulting value will have the length of the shortest input.
+    ///
+    /// # Example
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf1 = BitField::from_bin_str("0011 1010 0000 1111 1100 0101 0111");
+    /// bf1 &= &BitField::from_bin_str("0101 0000 1100 0111 1010 1111 0001");
+    /// assert_eq!(bf1, BitField::from_bin_str("0001 0000 0000 0111 1000 0101 0001"));
+    ///```
+    fn bitand_assign(&mut self, rhs: &BitField) {
+        // Figure out the number of bytes for the shortest input and truncate `self` accordingly
+        let min_len = std::cmp::min(self.len(), rhs.len());
+        let end = min_len.ceil().byte();
+        self.v.truncate(end);
+
+        // Perform the bitwise operation on all bytes
+        for i in 0..end {
+            self.v[i] &= rhs.v[i];
+        }
+        // No need to clear bits past the end of the length since the & operation should zero them out
+
+        // Update the length in case `self` was truncated
+        self.length = min_len;
     }
 }
 
@@ -1275,6 +1309,41 @@ impl std::ops::BitOr for &BitField {
     }
 }
 
+impl std::ops::BitOrAssign<&BitField> for BitField  {
+
+    /// Transforms `self` to have the value of `self | rhs`. If the two inputs have different lengths,
+    /// then the resulting value will have the length of the shortest input.
+    ///
+    /// # Example
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf1 = BitField::from_bin_str("0011 1010 0000 1111 1100 0101 0111");
+    /// bf1 |= &BitField::from_bin_str("0101 0000 1100 0111 1010 1111 0001");
+    /// assert_eq!(bf1, BitField::from_bin_str("0111 1010 1100 1111 1110 1111 0111"));
+    ///```
+    fn bitor_assign(&mut self, rhs: &BitField) {
+        // Figure out the number of bytes for the shortest input and truncate `self` accordingly
+        let min_len = std::cmp::min(self.len(), rhs.len());
+        let end = min_len.ceil().byte();
+        self.v.truncate(end);
+
+        // Perform the bitwise operation on all bytes
+        for i in 0..end {
+            self.v[i] |= rhs.v[i];
+        }
+
+        // Ensure that the bits past the end of the bitfield are zeroed
+        if min_len.bit() != 0 {
+            let last = (self.v[end - 1] >> min_len.cbit()) << min_len.cbit();
+            self.v[end - 1] = last;
+        }
+
+        // Update the length in case `self` was truncated
+        self.length = min_len;
+    }
+}
+
 impl std::ops::BitXor for &BitField {
     type Output = BitField;
 
@@ -1301,6 +1370,41 @@ impl std::ops::BitXor for &BitField {
             res[end - 1] = last;
         }
         BitField {v: res, length: min_len}
+    }
+}
+
+impl std::ops::BitXorAssign<&BitField> for BitField  {
+
+    /// Transforms `self` to have the value of `self ^ rhs`. If the two inputs have different lengths,
+    /// then the resulting value will have the length of the shortest input.
+    ///
+    /// # Example
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf1 = BitField::from_bin_str("0011 1010 0000 1111 1100 0101 0111");
+    /// bf1 ^= &BitField::from_bin_str("0101 0000 1100 0111 1010 1111 0001");
+    /// assert_eq!(bf1, BitField::from_bin_str("0110 1010 1100 1000 0110 1010 0110"));
+    ///```
+    fn bitxor_assign(&mut self, rhs: &BitField) {
+        // Figure out the number of bytes for the shortest input and truncate `self` accordingly
+        let min_len = std::cmp::min(self.len(), rhs.len());
+        let end = min_len.ceil().byte();
+        self.v.truncate(end);
+
+        // Perform the bitwise operation on all bytes
+        for i in 0..end {
+            self.v[i] ^= rhs.v[i];
+        }
+
+        // Ensure that the bits past the end of the bitfield are zeroed
+        if min_len.bit() != 0 {
+            let last = (self.v[end - 1] >> min_len.cbit()) << min_len.cbit();
+            self.v[end - 1] = last;
+        }
+
+        // Update the length in case `self` was truncated
+        self.length = min_len;
     }
 }
 
@@ -1392,6 +1496,28 @@ impl std::ops::Shl<usize> for BitField {
 
 }
 
+impl std::ops::ShlAssign<usize> for BitField  {
+
+    /// Transforms `self` by shifting all bits to the left by `rhs` bits.
+    /// Bits that are dropped off the left side are wrapped around to fill the right side.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_bin_str("1100 0000 1111 00");
+    /// bf <<= 2;
+    /// assert_eq!(bf, BitField::from_bin_str("0000 0011 1100 11"));
+    /// bf <<= 4;
+    /// assert_eq!(bf, BitField::from_bin_str("0011 1100 1100 00"));
+    ///```
+    fn shl_assign(&mut self, rhs: usize){
+        *self = std::mem::take(self) << rhs;
+    }
+}
+
+
+
 impl std::ops::Shr<usize> for BitField {
     type Output = Self;
 
@@ -1431,6 +1557,26 @@ impl std::ops::Shr<usize> for BitField {
         BitField::new(v, self.length)
     }
 
+}
+
+impl std::ops::ShrAssign<usize> for BitField  {
+
+    /// Transforms `self` by shifting all bits to the right by `rhs` bits.
+    /// Bits that are dropped off the right side are wrapped around to fill the right side.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_bin_str("1100 0000 1111 00");
+    /// bf >>= 2;
+    /// assert_eq!(bf, BitField::from_bin_str("0011 0000 0011 11"));
+    /// bf >>= 4;
+    /// assert_eq!(bf, BitField::from_bin_str("1111 0011 0000 00"));
+    ///```
+    fn shr_assign(&mut self, rhs: usize){
+        *self = std::mem::take(self) >> rhs;
+    }
 }
 
 pub trait FromBitField {
@@ -1575,6 +1721,45 @@ mod bit_field_tests {
         assert_eq!(&bf1 & &bf2, BitField::from_bin_str("0000 1100 0000 1000 1000"));
         assert_eq!(&bf1 | &bf2, BitField::from_bin_str("1111 1111 1100 1011 1110"));
         assert_eq!(&bf1 ^ &bf2, BitField::from_bin_str("1111 0011 1100 0011 0110"));
+    }
+
+    #[test]
+    fn bitwise_assign() {
+        let bf1 = BitField::from_bin_str("0101 1111 0000 1010 1100 0011");
+        let bf2 = BitField::from_bin_str("1010 1100 1100 1001 1010 0011");
+        let mut bf3 = bf1.clone();
+        bf3 &= &bf2;
+        assert_eq!(bf3, BitField::from_bin_str("0000 1100 0000 1000 1000 0011"));
+        bf3 = bf1.clone();
+        bf3 |= &bf2;
+        assert_eq!(bf3, BitField::from_bin_str("1111 1111 1100 1011 1110 0011"));
+        bf3 = bf1.clone();
+        bf3 ^= &bf2;
+        assert_eq!(bf3, BitField::from_bin_str("1111 0011 1100 0011 0110 0000"));
+
+        let bf1 = BitField::from_bin_str("0101 1111 0000 1010 1100");
+        let bf2 = BitField::from_bin_str("1010 1100 1100 1001 1010 0011");
+        bf3 = bf1.clone();
+        bf3 &= &bf2;
+        assert_eq!(bf3, BitField::from_bin_str("0000 1100 0000 1000 1000"));
+        bf3 = bf1.clone();
+        bf3 |= &bf2;
+        assert_eq!(bf3, BitField::from_bin_str("1111 1111 1100 1011 1110"));
+        bf3 = bf1.clone();
+        bf3 ^= &bf2;
+        assert_eq!(bf3, BitField::from_bin_str("1111 0011 1100 0011 0110"));
+
+        let bf1 = BitField::from_bin_str("0101 1111 0000 1010 1100 0011");
+        let bf2 = BitField::from_bin_str("1010 1100 1100 1001 1010");
+        bf3 = bf1.clone();
+        bf3 &= &bf2;
+        assert_eq!(bf3, BitField::from_bin_str("0000 1100 0000 1000 1000"));
+        bf3 = bf1.clone();
+        bf3 |= &bf2;
+        assert_eq!(bf3, BitField::from_bin_str("1111 1111 1100 1011 1110"));
+        bf3 = bf1.clone();
+        bf3 ^= &bf2;
+        assert_eq!(bf3, BitField::from_bin_str("1111 0011 1100 0011 0110"));
     }
 
     #[test]
