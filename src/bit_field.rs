@@ -479,10 +479,20 @@ impl BitField {
             }
         } else {
             let res = self.v[start.byte()] << start.bit();
-            if i == self.length.byte() {
+            let last_byte = if self.length.bit() == 0 {
+                self.length.byte() - 1
+            } else {
+                self.length.byte()
+            };
+            if i == last_byte {
                 // 0101 0011 1010 0011 010
                 // ---- --              ^- 
-                res | (self.v[0] >> (self.length.bit() - start.bit()))
+                if self.length.bit() == 0 {
+                    res | (self.v[0] >> (8 - start.bit()))
+                } else {
+                    res | (self.v[0] >> (self.length.bit() - start.bit()))
+                }
+                
             } else {
                 let next_byte = self.v[start.byte() + 1] >> start.cbit();
                 if start + BitIndex::new(1, 0) > self.length {
@@ -1341,28 +1351,43 @@ impl std::ops::Shl<usize> for BitField {
             return self;
         }
 
-        let crhs = 8 - rhs;
-        let max_bit = self.max_index().bit() as usize;
+        // let crhs = 8 - rhs;
+        // let max_bit = self.max_index().bit() as usize;
 
-        let mut res = Vec::<u8>::new();
-        for i in 0..(self.max_index().byte() - 1) {
-            res.push((self.v[i] << rhs) | (self.v[i + 1] >> crhs));
+        // let mut res = Vec::<u8>::new();
+        // for i in 0..(self.max_index().byte() - 1) {
+        //     res.push((self.v[i] << rhs) | (self.v[i + 1] >> crhs));
+        // }
+
+        // let i = self.max_index().byte() - 1;
+        // if rhs <= max_bit {
+        //     res.push((self.v[i] << rhs) | (self.v[i + 1] >> crhs));
+        //     if max_bit != 0 {
+        //         res.push((self.v[i + 1] << rhs) | (((self.v[0] >> crhs) << crhs) >> (max_bit - rhs)));
+        //     }
+        // } else if max_bit != 0 {
+        //     res.push((self.v[i] << rhs) | (self.v[i + 1] >> crhs) | (self.v[0] >> (crhs + max_bit)));
+        //     res.push((self.v[0] >> crhs) << (8 - max_bit));
+        // } else {
+        //     res.push((self.v[i] << rhs) | (self.v[0] >> crhs));
+        // }
+
+        let shift = BitIndex::bits(rhs);
+        
+
+        let mut v = Vec::<u8>::with_capacity(self.v.len());
+
+
+        for i in 0..self.v.len() {
+            let bi = BitIndex::bytes(i) + shift;
+            v.push(self.extract_u8_cyclical(bi));
         }
 
-        let i = self.max_index().byte() - 1;
-        if rhs <= max_bit {
-            res.push((self.v[i] << rhs) | (self.v[i + 1] >> crhs));
-            if max_bit != 0 {
-                res.push((self.v[i + 1] << rhs) | (((self.v[0] >> crhs) << crhs) >> (max_bit - rhs)));
-            }
-        } else if max_bit != 0 {
-            res.push((self.v[i] << rhs) | (self.v[i + 1] >> crhs) | (self.v[0] >> (crhs + max_bit)));
-            res.push((self.v[0] >> crhs) << (8 - max_bit));
-        } else {
-            res.push((self.v[i] << rhs) | (self.v[0] >> crhs));
+        if !self.length.is_byte_boundary() {
+            v[self.length.byte()] = (v[self.length.byte()] >> self.length.cbit()) << self.length.cbit();
         }
         
-        BitField {v: res, length: self.len()}
+        BitField {v: v, length: self.len()}
     }
 
 }
@@ -1389,6 +1414,7 @@ impl std::ops::Shr<usize> for BitField {
         }
 
         let shift = BitIndex::bits(rhs);
+        // println!("{:?}", shift);
 
         let mut v = Vec::<u8>::with_capacity(self.v.len());
 
@@ -1556,8 +1582,14 @@ mod bit_field_tests {
         let bf = BitField::from_vec(vec![0x00, 0x00, 0xAB, 0x0F]);
         assert_eq!(bf.clone() << 2, BitField::from_vec(vec![0x00, 0x02, 0xAC, 0x3C]));
         assert_eq!(bf.clone() << 4, BitField::from_vec(vec![0x00, 0x0A, 0xB0, 0xF0]));
+        assert_eq!(bf.clone() << 12, BitField::from_vec(vec![0x0A, 0xB0, 0xF0, 0x00]));
         assert_eq!(bf.clone() << 6, (bf.clone() << 4) << 2);
         assert_eq!(bf.clone() << 0, bf.clone());
+
+        assert_eq!(bf.clone() >> 2, BitField::from_vec(vec![0xC0, 0x00, 0x2A, 0xC3]));
+        assert_eq!(bf.clone() >> 4, BitField::from_vec(vec![0xF0, 0x00, 0x0A, 0xB0]));
+        assert_eq!(bf.clone() >> 6, (bf.clone() >> 4) >> 2);
+        assert_eq!(bf.clone() >> 0, bf.clone());
 
         // let bf = BitField::from_bin_str("1100 0000 1111 00");
         // let bf = bf >> 2;
@@ -1571,48 +1603,98 @@ mod bit_field_tests {
 
     #[test]
     fn left_shifts() {
+        let bf = BitField::from_vec(vec![0x00, 0x00, 0xAB, 0x0F]);
+        assert_eq!(bf.clone() << 2, BitField::from_vec(vec![0x00, 0x02, 0xAC, 0x3C]));
+        assert_eq!(bf.clone() << 4, BitField::from_vec(vec![0x00, 0x0A, 0xB0, 0xF0]));
+        assert_eq!(bf.clone() << 6, (bf.clone() << 4) << 2);
+        assert_eq!(bf.clone() << 12, BitField::from_vec(vec![0x0A, 0xB0, 0xF0, 0x00]));
+        assert_eq!(bf.clone() << 76, BitField::from_vec(vec![0x0A, 0xB0, 0xF0, 0x00]));
+        assert_eq!(bf.clone() << 0, bf.clone());
+        assert_eq!(bf.clone() << 64, bf.clone());
+
         let bf = BitField::from_bin_str("1010 1111 0000 0101 0011");
         assert_eq!(bf.clone() << 2, BitField::from_bin_str("1011 1100 0001 0100 1110"));
         assert_eq!(bf.clone() << 4, BitField::from_bin_str("1111 0000 0101 0011 1010"));
         assert_eq!(bf.clone() << 6, BitField::from_bin_str("1100 0001 0100 1110 1011"));
+        assert_eq!(bf.clone() << 26, BitField::from_bin_str("1100 0001 0100 1110 1011"));
+        assert_eq!(bf.clone() << 46, BitField::from_bin_str("1100 0001 0100 1110 1011"));
+        assert_eq!(bf.clone() << 206, BitField::from_bin_str("1100 0001 0100 1110 1011"));
+        assert_eq!(bf.clone() << 20, bf.clone());
+        assert_eq!(bf.clone() << 200, bf.clone());
 
         let bf = BitField::from_bin_str("1010 1111 0000 0101 01");
         assert_eq!(bf.clone() << 1, BitField::from_bin_str("010 1111 0000 0101 011"));
         assert_eq!(bf.clone() << 3, BitField::from_bin_str("0 1111 0000 0101 01101"));
         assert_eq!(bf.clone() << 5, BitField::from_bin_str("111 0000 0101 011010 1"));
+        assert_eq!(bf.clone() << 23, BitField::from_bin_str("111 0000 0101 011010 1"));
+        assert_eq!(bf.clone() << 185, BitField::from_bin_str("111 0000 0101 011010 1"));
+        assert_eq!(bf.clone() << 18, bf.clone());
+        assert_eq!(bf.clone() << 180, bf.clone());
 
         let bf = BitField::from_bin_str("1010 1111 0000 0101 0011 11");
         assert_eq!(bf.clone() << 2, BitField::from_bin_str("1011 1100 0001 0100 1111 10"));
         assert_eq!(bf.clone() << 4, BitField::from_bin_str("1111 0000 0101 0011 1110 10"));
         assert_eq!(bf.clone() << 6, BitField::from_bin_str("1100 0001 0100 1111 1010 11"));
+        assert_eq!(bf.clone() << 28, BitField::from_bin_str("1100 0001 0100 1111 1010 11"));
+        assert_eq!(bf.clone() << 446, BitField::from_bin_str("1100 0001 0100 1111 1010 11"));
+        assert_eq!(bf.clone() << 22, bf.clone());
+        assert_eq!(bf.clone() << 440, bf.clone());
 
         let bf = BitField::from_bin_str("1010 1111 0000 0101 0011 110");
         assert_eq!(bf.clone() << 1 << 2 << 3 << 4 << 5 << 6 << 7, bf.clone() << 5);
         // println!("{:?}", bf.clone() << 6);
         // todo!();
+        let bf = BitField::from_hex_str("AB CD EF 7");
+        assert_eq!(bf.clone() << 4, BitField::from_hex_str("BC DE F7 A"));
+        assert_eq!(bf.clone() << 12, BitField::from_hex_str("DE F7 AB C"));
     }
 
     #[test]
     fn right_shifts() {
+        let bf = BitField::from_vec(vec![0x00, 0x00, 0xAB, 0x0F]);
+        assert_eq!(bf.clone() >> 2, BitField::from_vec(vec![0xC0, 0x00, 0x2A, 0xC3]));
+        assert_eq!(bf.clone() >> 4, BitField::from_vec(vec![0xF0, 0x00, 0x0A, 0xB0]));
+        assert_eq!(bf.clone() >> 6, (bf.clone() >> 4) >> 2);
+        assert_eq!(bf.clone() >> 12, BitField::from_vec(vec![0xB0, 0xF0, 0x00, 0x0A]));
+        assert_eq!(bf.clone() >> 76, BitField::from_vec(vec![0xB0, 0xF0, 0x00, 0x0A]));
+        assert_eq!(bf.clone() >> 0, bf.clone());
+        assert_eq!(bf.clone() >> 64, bf.clone());
+
         let bf = BitField::from_bin_str("1010 1111 0000 0101 0011");
         assert_eq!(bf.clone() >> 2, BitField::from_bin_str("1110 1011 1100 0001 0100"));
         assert_eq!(bf.clone() >> 4, BitField::from_bin_str("0011 1010 1111 0000 0101"));
         assert_eq!(bf.clone() >> 6, BitField::from_bin_str("0100 1110 1011 1100 0001"));
+        assert_eq!(bf.clone() >> 26, BitField::from_bin_str("0100 1110 1011 1100 0001"));
+        assert_eq!(bf.clone() >> 46, BitField::from_bin_str("0100 1110 1011 1100 0001"));
+        assert_eq!(bf.clone() >> 206, BitField::from_bin_str("0100 1110 1011 1100 0001"));
+        assert_eq!(bf.clone() >> 20, bf.clone());
+        assert_eq!(bf.clone() >> 200, bf.clone());
 
         let bf = BitField::from_bin_str("1010 1111 0000 0101 01");
         assert_eq!(bf.clone() >> 1, BitField::from_bin_str("1101 0111 1000 0010 10"));
         assert_eq!(bf.clone() >> 3, BitField::from_bin_str("1011 0101 1110 0000 10"));
         assert_eq!(bf.clone() >> 5, BitField::from_bin_str("1010 1101 0111 1000 00"));
+        assert_eq!(bf.clone() >> 23, BitField::from_bin_str("1010 1101 0111 1000 00"));
+        assert_eq!(bf.clone() >> 185, BitField::from_bin_str("1010 1101 0111 1000 00"));
+        assert_eq!(bf.clone() >> 18, bf.clone());
+        assert_eq!(bf.clone() >> 180, bf.clone());
 
         let bf = BitField::from_bin_str("1010 1111 0000 0101 0011 11");
         assert_eq!(bf.clone() >> 2, BitField::from_bin_str("1110 1011 1100 0001 0100 11"));
         assert_eq!(bf.clone() >> 4, BitField::from_bin_str("1111 1010 1111 0000 0101 00"));
         assert_eq!(bf.clone() >> 6, BitField::from_bin_str("0011 1110 1011 1100 0001 01"));
+        assert_eq!(bf.clone() >> 28, BitField::from_bin_str("0011 1110 1011 1100 0001 01"));
+        assert_eq!(bf.clone() >> 446, BitField::from_bin_str("0011 1110 1011 1100 0001 01"));
+        assert_eq!(bf.clone() >> 22, bf.clone());
+        assert_eq!(bf.clone() >> 440, bf.clone());
 
         let bf = BitField::from_bin_str("1010 1111 0000 0101 0011 110");
         assert_eq!(bf.clone() >> 1 >> 2 >> 3 >> 4 >> 5 >> 6 >> 7, bf.clone() >> 5);
         // println!("{:?}", bf.clone() << 6);
         // todo!();
+        let bf = BitField::from_hex_str("AB CD EF 7");
+        assert_eq!(bf.clone() >> 4, BitField::from_hex_str("7A BC DE F"));
+        assert_eq!(bf.clone() >> 12, BitField::from_hex_str("EF 7A BC D"));
     }
 
     #[test]
