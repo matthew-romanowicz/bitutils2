@@ -269,6 +269,14 @@ impl BitField {
         BitField {v: buffer, length}
     }
 
+    pub fn to_bin_str(&self) -> String {
+        let mut s = "".to_string();
+        for b in &self.v {
+            s.push_str(&format!("{:>08b}", b))
+        }
+        return s[..(self.len().total_bits() as usize)].to_string()
+    }
+
     /// Returns the length of the [`BitField`](crate::BitField) as a [`BitIndex`](crate::BitIndex).
     pub fn len(&self) -> BitIndex {
         self.length
@@ -304,7 +312,9 @@ impl BitField {
     /// Concatenates the argument onto the end of the [`BitField`](crate::BitField), adjusting the 
     /// length of the [`BitField`](crate::BitField) accordingly.
     pub fn extend(&mut self, other: &BitField) {
-        if self.length.bit() == 0 {
+        if other.is_empty() {
+            // Do nothing
+        } else if self.length.bit() == 0 {
             self.v.extend(other.v.clone());
         } else {
             let cbit = self.length.cbit();
@@ -369,6 +379,203 @@ impl BitField {
         self.repeat(n as usize + 1);
         self.truncate(new_length);
         
+    }
+
+    // fn offset_xor(&mut self, rhs: BitField, offset: BitIndex) {
+
+    // }
+
+    /// Finds the index of the first `1` bit in `self`. Returns None if
+    /// there are no zeros in `self` or if `self` is empty.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let bf = BitField::from_bin_str("0000 0101 1100 1100 0000");
+    /// assert_eq!(bf.find_first_one().unwrap(), BitIndex::bits(5));
+    /// let bf = BitField::from_bin_str("1000 0101 1100 1100 0000");
+    /// assert_eq!(bf.find_first_one().unwrap(), BitIndex::bits(0));
+    /// let bf = BitField::from_bin_str("0000 0000 0000 0000 0000 0000");
+    /// assert!(bf.find_first_one().is_none());
+    /// let bf = BitField::from_vec(vec![]);
+    /// assert!(bf.find_first_one().is_none());
+    ///```
+    pub fn find_first_one(&self) -> Option<BitIndex> {
+        self.v.iter().enumerate().find_map(|(i, b)| {
+            if *b == 0 {
+                None
+            } else {
+                let mut b = *b;
+                let mut bit = 8;
+                while b > 0 {
+                    b >>= 1;
+                    bit -= 1;
+                }
+                Some(BitIndex::new(i, bit))
+            }
+        })
+    }
+
+    /// Finds the index of the next `1` bit in `self`, starting from and including the
+    /// provided start index. Returns None if there are no zeros in `self` 
+    /// after or including `start` or if `self` is empty.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_bin_str("0101 1100 1100 0000 0000 0010 0001 0000 0000");
+    /// assert_eq!(bf.find_next_one(BitIndex::zero()).unwrap(), BitIndex::bits(1));
+    /// assert_eq!(bf.find_next_one(BitIndex::bits(1)).unwrap(), BitIndex::bits(1));
+    /// assert_eq!(bf.find_next_one(BitIndex::bits(11)).unwrap(), BitIndex::bits(22));
+    /// assert!(bf.find_next_one(BitIndex::bits(29)).is_none());
+    /// assert!(bf.find_next_one(BitIndex::bits(100)).is_none());
+    ///```
+    pub fn find_next_one(&self, start: BitIndex) -> Option<BitIndex> {
+        self.v.iter().enumerate().skip(start.byte()).find_map(|(i, b)| {
+            if *b == 0 {
+                None
+            } else {
+                let mut b = *b;
+                let mut bit = 8;
+                if i == start.byte() {
+                    b <<= start.bit();
+                    if b == 0 {
+                        return None
+                    }
+                    b >>= start.bit()
+                }
+                while b > 0 {
+                    b >>= 1;
+                    bit -= 1;
+                }
+                Some(BitIndex::new(i, bit))
+            }
+        })
+    }
+
+    /// Calculates the CRC of `self` using the provided initial value and 
+    /// polynomial assuming big-endian bit order. Note that the polynomial paramter
+    /// must not include the leading 1. 
+    ///
+    /// Panics if the initial and polynomial parameters are different lengths.
+    pub fn crc_be(&self, initial: BitField, polynomial: BitField) -> BitField {
+        let n = polynomial.len();
+        if initial.len() != n {
+            panic!("Length of 'initial' must be equal to length of 'polynomial'")
+        }
+        let mut current = BitIndex::zero();
+        let mut slice: BitField;
+
+        if self.len() < n {
+            slice = self.clone();
+            slice.extend(&BitField::zeros(&(n - self.len())));
+        } else {
+            slice = self.bit_slice(&current, &(current + n));
+        }
+
+        slice ^= &initial;
+
+        // let mut next = None;
+        loop {
+            
+            println!("new current: {}", current);
+            println!("{}v", " ".repeat(current.total_bits() as usize));
+            println!("{}", self.to_bin_str());
+            println!("{}{}", " ".repeat(current.total_bits() as usize), slice.to_bin_str());
+
+
+            loop {
+
+                println!("\tcurrent: {}", current);
+
+                // Look for the next non-zero bit
+                match slice.find_first_one() {
+                    None => {
+                        println!("\tNext is none in slice");
+                        if current + n > self.len() {
+                            println!("{}v", " ".repeat(current.total_bits() as usize));
+                            println!("{}", self.to_bin_str());
+                            println!("{}{}", " ".repeat(current.total_bits() as usize), slice.to_bin_str());
+                            
+                            slice <<= (current + n - self.len()).total_bits() as usize;
+                            slice.truncate(&(self.len() - current));
+                            slice.extend(&BitField::zeros(&(current + n - self.len())));
+                            return slice
+                        } else {
+                            current = current + n;
+                        }
+                        break;
+                    },
+                    Some(offset) => {
+                        let offset = offset + 1;
+                        println!("\toffset: {}", offset);
+                        if current + offset > self.len() {
+                            slice <<= (self.len() - current).total_bits() as usize;
+                            slice.truncate(&(current + n - self.len()));
+                            slice.extend(&BitField::zeros(&(self.len() - current)));
+                            return slice
+                            // current = self.len();
+                            // break;
+                        }
+                        slice <<= offset.total_bits() as usize;
+                        slice.truncate(&(n - offset));
+                        if current + n > self.len() {
+                            slice.extend(&BitField::zeros(&offset));
+                        } else if current + offset + n > self.len() {
+                            println!("Supplementing slice with zeros: {}, {}", current + n, self.len());
+                            slice.extend(&self.bit_slice(&(current + n), &self.len()));
+                            slice.extend(&BitField::zeros(&(current + offset + n - self.len())));
+                        } else {
+                            println!("Not supplementing slice with zeros");
+                            slice.extend(&self.bit_slice(&(current + n), &(current + offset + n)));
+                        }
+                        
+                        slice ^= &polynomial;
+                        current = current + offset;
+                        println!("\t{}v", " ".repeat(current.total_bits() as usize));
+                        println!("\t{}", self.to_bin_str());
+                        println!("\t{}{}", " ".repeat(current.total_bits() as usize), slice.to_bin_str());
+                    }
+                }
+            }
+
+            println!("current: {}", current);
+            println!("{}v", " ".repeat(current.total_bits() as usize));
+            println!("{}", self.to_bin_str());
+
+            // Find the next non-zero bit if one exists
+            match self.find_next_one(current) {
+                None => {
+                    println!("No next");
+                    if current + n > self.len() {
+                        println!("{}v", " ".repeat(current.total_bits() as usize));
+                        println!("{}", self.to_bin_str());
+                        println!("{}{}", " ".repeat(current.total_bits() as usize), slice.to_bin_str());
+                        slice <<= (current + n - self.len()).total_bits() as usize;
+                        slice.truncate(&(self.len() - current));
+                        slice.extend(&BitField::zeros(&(current + n - self.len())));
+                        return slice
+                    } else {
+                        return BitField::zeros(&n)
+                    }
+                },
+                Some(next) => {
+                    println!("next: {}", next);
+                    current = next + 1;
+                    if current + n > self.len() {
+                        slice = self.bit_slice(&current, &self.len());
+                        slice.extend(&BitField::zeros(&(current + n - self.len())));
+                        println!("Case 1: {:?}", slice);
+                    } else {
+                        slice = self.bit_slice(&current, &(current + n));
+                        println!("Case 2: {:?}", slice);
+                    }
+                    slice ^= &polynomial;
+                }
+            }
+        }
     }
 
     /// Swaps the byte order of `self` from litte-endian to big-endian. Does nothing
@@ -497,7 +704,10 @@ impl BitField {
 
     pub fn extract_u8_cyclical(&self, start: BitIndex) -> u8 {
         if self.length.byte() == 0 {
-            todo!()
+            // TODO: This is a stupid implementation
+            let mut r = self.clone();
+            r.repeat(8);
+            return r.extract_u8_cyclical(start)
         }
         let start = start.rem_euclid(&self.length);
         let i = start.byte();
@@ -1732,6 +1942,33 @@ mod bit_field_tests {
         bf.repeat(1000);
         bf2.repeat(12000);
         assert_eq!(bf, bf2);
+    }
+
+    #[test]
+    fn crc_test() {
+        let bf = BitField::from_bin_str("11010011101100");
+        assert_eq!(bf.crc_be(BitField::from_bin_str("000"), BitField::from_bin_str("011")), BitField::from_bin_str("100"));
+        let bf = BitField::from_hex_str("E100CAFE");
+        assert_eq!(bf.crc_be(BitField::from_bin_str("00000000"), BitField::from_bin_str("00110001")), BitField::from_bin_str("00100011"));
+        assert_eq!(bf.crc_be(BitField::from_bin_str("0000000"), BitField::from_bin_str("0110001")), BitField::from_bin_str("0000001"));
+        assert_eq!(bf.crc_be(BitField::from_bin_str("000000"), BitField::from_bin_str("011001")), BitField::from_bin_str("101100"));
+        assert_eq!(bf.crc_be(BitField::from_bin_str("00000"), BitField::from_bin_str("01001")), BitField::from_bin_str("01010"));
+
+        let bf = BitField::from_hex_str("01E100CAFE");
+        assert_eq!(bf.crc_be(BitField::from_bin_str("00000"), BitField::from_bin_str("01001")), BitField::from_bin_str("11000"));
+
+        let bf = BitField::from_hex_str("CAFE");
+        assert_eq!(bf.crc_be(BitField::from_bin_str("00000000000000000"), BitField::from_bin_str("010 0101 1011 1011 01")), BitField::from_bin_str("1000 1001 1111 1111 0"));
+
+        let bf = BitField::from_bin_str("11101010");
+        assert_eq!((bf.crc_be(BitField::from_bin_str("00000000"), BitField::from_bin_str("00000111"))), BitField::from_bin_str("10011000"));
+
+        // let bf = BitField::from_hex_str("49 48 44 52 00 00 00 20 00 00 00 20 08 02 00 00 00");
+        // let bf = BitField::from_hex_str("92 12 22 4A 00 00 00 04 00 00 00 04 10 40 00 00 00");
+        // let bf = BitField::from_hex_str("00 00 00 40 10 04 00 00 00 04 00 00 00 4A 22 12 92");
+        // assert_eq!(!&(bf.crc(BitField::from_hex_str("04C11DB7"))), BitField::from_hex_str("FC18EDA3"));
+        // assert_eq!((bf.crc(BitField::from_hex_str("2083B8ED"))), BitField::from_hex_str("FC18EDA3"));
+        // assert_eq!((bf.crc(BitField::from_hex_str("EDB88320"))), BitField::from_hex_str("FC18EDA3"));
     }
 
     #[test]
