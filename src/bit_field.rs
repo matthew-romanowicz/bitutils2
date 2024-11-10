@@ -1665,6 +1665,49 @@ impl BitField {
         }
     }
 
+    /// Pads `self` to the specified length in such a way that when interpreted
+    /// as an sign-magnitude little-endian integer, the value is unchanged. More 
+    /// specifically, the sign bit is removed, `self` is extended to the new 
+    /// length using [`pad_unsigned_le`](BitField::pad_unsigned_le), and the sign 
+    /// bit is reinserted at the new MSB location.
+    /// 
+    /// Does nothing if the provided length is less than or equal to `self`'s current
+    /// length.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_vec(vec![0x39, 0x30]);
+    /// let u = u16::from_le_bytes(bf.clone().into_array().unwrap());
+    /// assert_eq!(u & 0x7fff, 12345); // Magnitude = 12345
+    /// assert_eq!((u & 0x8000) >> 15, 0); // Sign = positive
+    ///
+    /// bf.pad_sign_magnitude_le(BitIndex::bits(32));
+    /// let u = u32::from_le_bytes(bf.clone().into_array().unwrap());
+    /// assert_eq!(u & 0x7fffffff, 12345); // Magnitude = 12345
+    /// assert_eq!((u & 0x80000000) >> 31, 0); // Sign = positive
+    ///
+    /// bf.pad_sign_magnitude_le(BitIndex::bits(64));
+    /// let u = u64::from_le_bytes(bf.clone().into_array().unwrap());
+    /// assert_eq!(u & 0x7fffffffffffffff, 12345); // Magnitude = 12345
+    /// assert_eq!((u & 0x8000000000000000) >> 63, 0); // Sign = positive
+    ///
+    /// let mut bf = BitField::from_vec(vec![0x39, 0xb0]);
+    /// let u = u16::from_le_bytes(bf.clone().into_array().unwrap());
+    /// assert_eq!(u & 0x7fff, 12345); // Magnitude = 12345
+    /// assert_eq!((u & 0x8000) >> 15, 1); // Sign = negative
+    ///
+    /// bf.pad_sign_magnitude_le(BitIndex::bits(32));
+    /// let u = u32::from_le_bytes(bf.clone().into_array().unwrap());
+    /// assert_eq!(u & 0x7fffffff, 12345); // Magnitude = 12345
+    /// assert_eq!((u & 0x80000000) >> 31, 1); // Sign = negative
+    ///
+    /// bf.pad_sign_magnitude_le(BitIndex::bits(64));
+    /// let u = u64::from_le_bytes(bf.clone().into_array().unwrap());
+    /// assert_eq!(u & 0x7fffffffffffffff, 12345); // Magnitude = 12345
+    /// assert_eq!((u & 0x8000000000000000) >> 63, 1); // Sign = negative
+    ///```
     pub fn pad_sign_magnitude_le(&mut self, new_length: BitIndex) {
         if self.length < new_length {
 
