@@ -247,6 +247,8 @@ mod match_tests {
         let v = vec![0b01100101, 0b01001110, 0b10010011, 0b11111111, 0b01010010, 0b00010011, 0b00010011];
         assert_eq!(BinRegex::new("[u3:0..3]+[u3:^0..3]").unwrap().match_length(&v), Some(BitIndex::new(1, 4)));
         assert_eq!(BinRegex::new("[u4:^0..2]*[u4:0..2]+").unwrap().match_length(&v), Some(BitIndex::new(5, 4)));
+        assert_eq!(BinRegex::new("[u12:2514]").unwrap().find(&v).unwrap().span(), (bx!(,9), bx!(,9+12)));
+        assert_eq!(BinRegex::new("[u20:1026313]").unwrap().find(&v).unwrap().span(), (bx!(3, 3), bx!(5, 7)));
     }
 
     #[test]

@@ -81,7 +81,7 @@ enum GroupType {
 }
 
 // enum DynamicCharacterClass {
-//     U8(CharClass<u8>),
+//     U8(CharClass<UIntBe>),
 //     U16(CharClass<u16>),
 //     U32(CharClass<u32>),
 //     U64(CharClass<u64>),
@@ -93,12 +93,14 @@ enum GroupType {
 //     F64(CharClass<f64>),
 // }
 
+trait MyTrait: std::str::FromStr + std::cmp::Ord + std::hash::Hash + FromBitField + std::fmt::Debug {}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     Repetition(Repeat, Box<Token>),
     Group(Option<usize>, Vec<Token>),
     Choice(Vec<Token>),
-    CharacterClass(std::rc::Rc<CharClass<u8>>),
+    CharacterClass(std::rc::Rc<CharClass<UIntBe>>),
     Nibble(u8),
     ByteBoundary,
     NibbleBoundary,
@@ -121,7 +123,7 @@ enum StateTransition {
     EqualsBit(u8),
     EqualsNibble(u8),
     ConsumeBits(usize),
-    CharacterClass(std::rc::Rc<CharClass<u8>>)
+    CharacterClass(std::rc::Rc<CharClass<UIntBe>>)
 }
 
 enum TextEncoding {
@@ -145,7 +147,7 @@ enum TextEncoding {
 // #[derive(PartialEq, Eq, Debug)]
 // struct U8CharClass {
 //     inverted: bool,
-//     options: std::collections::HashSet<u8>,
+//     options: std::collections::HashSet<UIntBe>,
 //     ranges: Vec<(u8, u8)>
 // }
 
@@ -165,6 +167,38 @@ enum TextEncoding {
 //     }
 // }
 
+// #[derive(std::hash::Hash, Debug)]
+// struct UIntBe {
+//     inner: u128
+// }
+
+// impl std::str::FromStr for UIntBe {
+//     type Err = std::num::ParseIntError;
+
+//     fn from_str(s: &str) -> Result<Self, Self::Err> {
+//         Ok(UIntBe{inner: u128::from_str(s)?})
+//     }
+// }
+
+type UIntBe = u128;
+impl FromBitField for UIntBe {
+    fn from_bf(bf: &BitField) -> UIntBe {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            bf.pad_unsigned_be(BitIndex::bits(128));
+        }
+
+        u128::from_be_bytes(bf.into_array().unwrap())
+    }
+}
+
+// impl Ord for UIntBe {
+
+// }
+
 #[derive(PartialEq, Eq, Debug)]
 struct CharClass<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField> {
     inverted: bool,
@@ -174,7 +208,10 @@ struct CharClass<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField> {
 }
 
 impl<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug> CharClass<T> {
-    fn input_length(&self) -> BitIndex {self.input_length}
+    fn input_length(&self) -> BitIndex {
+        self.input_length
+    }
+
     fn matches(&self, input: &BitField) -> bool {
         let x: T = T::from_bf(input);
         //println!("TRYING TO MATCH {:?}", x);
@@ -190,11 +227,11 @@ impl<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Deb
     }
 }
 
-fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<u8>, String> {
+fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<UIntBe>, String> {
     let mut input_iter = escape_vec(input).peekable();
-    let mut options = std::collections::HashSet::<u8>::new();
-    let mut ranges = Vec::<(u8, u8)>::new();
-    let mut prev_char: Option<u8> = None;
+    let mut options = std::collections::HashSet::<UIntBe>::new();
+    let mut ranges = Vec::<(UIntBe, UIntBe)>::new();
+    let mut prev_char: Option<UIntBe> = None;
     let mut escaped = false;
     let mut range_started = false;
 
@@ -220,7 +257,7 @@ fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<u8>, String> {
             _ if range_started => {
                 match prev_char {
                     Some(p) => {
-                        ranges.push((p as u8, c as u8));
+                        ranges.push((p as UIntBe, c as UIntBe));
                         prev_char = None;
                     },
                     None => return Err("Impossible state".to_string())
@@ -229,11 +266,11 @@ fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<u8>, String> {
             _ => {
                 match prev_char {
                     Some(p) => {
-                        options.insert(p as u8);
+                        options.insert(p as UIntBe);
                     },
                     None => ()
                 }
-                prev_char = Some(c as u8);
+                prev_char = Some(c as UIntBe);
             }
         }
         range_started = false;
@@ -241,11 +278,11 @@ fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<u8>, String> {
     }
     match prev_char {
         Some(p) => {
-            options.insert(p as u8);
+            options.insert(p as UIntBe);
         },
         None => ()
     }
-    Ok(CharClass::<u8> {inverted, options, ranges, input_length: BitIndex::new(1, 0)})
+    Ok(CharClass::<UIntBe> {inverted, options, ranges, input_length: BitIndex::new(1, 0)})
 }
 
 enum RangeParseProgress<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug> {
@@ -370,7 +407,7 @@ fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
                                 }
                             },
                             'u' => {
-                                match parse_uint_char_class::<u8>(&input[i+1..].to_vec(), n) {
+                                match parse_uint_char_class::<UIntBe>(&input[i+1..].to_vec(), n) {
                                     Ok(cls) => {
                                         return Ok(Token::CharacterClass(std::rc::Rc::new(cls)))
                                     },
@@ -1334,7 +1371,7 @@ mod tests {
         options.insert(0);
         options.insert(1);
         options.insert(23);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx!(,5)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![], input_length: bx!(,5)}))));
 
         let input = "u6:^0,1,23".chars().collect();
         let res = parse_char_class(&input);
@@ -1342,7 +1379,7 @@ mod tests {
         options.insert(0);
         options.insert(1);
         options.insert(23);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![], input_length: bx!(,6)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: true, options, ranges: vec![], input_length: bx!(,6)}))));
 
         let input = "u8:^0,50..64,1,23,100..128".chars().collect();
         let res = parse_char_class(&input);
@@ -1350,7 +1387,7 @@ mod tests {
         options.insert(0);
         options.insert(1);
         options.insert(23);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![(50,64), (100, 128)], input_length: bx!(,8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: true, options, ranges: vec![(50,64), (100, 128)], input_length: bx!(,8)}))));
     }
 
     #[test]
@@ -1361,7 +1398,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx!(,8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![], input_length: bx!(,8)}))));
 
         let input = "a8:^abc".chars().collect();
         let res = parse_char_class(&input);
@@ -1369,7 +1406,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![], input_length: bx!(,8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: true, options, ranges: vec![], input_length: bx!(,8)}))));
 
         let input = "\\\\a\\bc".chars().collect();
         let res = parse_char_class(&input);
@@ -1378,7 +1415,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx!(,8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![], input_length: bx!(,8)}))));
 
         let input = "a8:abc0-9".chars().collect();
         let res = parse_char_class(&input);
@@ -1386,7 +1423,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![(48, 57)], input_length: bx!(,8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![(48, 57)], input_length: bx!(,8)}))));
 
         let input = "abc0-9\\--z".chars().collect();
         let res = parse_char_class(&input);
@@ -1394,7 +1431,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![(48, 57), (45, 122)], input_length: bx!(,8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![(48, 57), (45, 122)], input_length: bx!(,8)}))));
 
         let input = "a8:^0-9abc0-9d\\--zef".chars().collect();
         let res = parse_char_class(&input);
@@ -1405,7 +1442,7 @@ mod tests {
         options.insert(100);
         options.insert(101);
         options.insert(102);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![(48, 57), (48, 57), (45, 122)], input_length: bx!(,8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: true, options, ranges: vec![(48, 57), (48, 57), (45, 122)], input_length: bx!(,8)}))));
     }
 
     #[test]
