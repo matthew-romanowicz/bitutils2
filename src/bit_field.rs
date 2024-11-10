@@ -571,13 +571,66 @@ impl BitField {
         }
     }
 
-    pub fn slice_with_pad(&self, start: &BitIndex, end: &BitIndex, pad: BitPad) -> BitField {
+    /// Returns a slice of `self` that may extend beyond the contents of `self` in the positive and/or
+    /// negative directions. The returned slice will be padded to the left (in the case of a negative
+    /// `start` index) according to the `lpad` parameter, and to the right (in the case of a `end` index
+    /// that is greater than `self`'s length) according to the provided `rpad` parameter. If neither `start`
+    /// nor `end` are negative, then this is equivalent in function to [`slice_with_rpad`](crate::BitField::slice_with_rpad)
+    ///
+    /// Panics if `end` is less than `start`.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex, BitPad};
+    ///
+    /// let bf = BitField::from_bin_str("0101 1100 1100 0011 1010");
+    ///
+    /// // When the slice is contained within the bitfield, no padding is done.
+    /// let slice_l0_r1 = bf.slice_with_pad(&BitIndex::new(0, 4), &BitIndex::new(2, 2), BitPad::Zeros, BitPad::Ones);
+    /// let slice_r0_l1 = bf.slice_with_pad(&BitIndex::new(0, 4), &BitIndex::new(2, 2), BitPad::Ones, BitPad::Zeros);
+    /// assert_eq!(slice_l0_r1, BitField::from_bin_str("1100 1100 0011 10"));
+    /// assert_eq!(slice_r0_l1, BitField::from_bin_str("1100 1100 0011 10"));
+    ///
+    /// // When the slice is partially contained within the bitfield, then the remaining
+    /// // portion will be filled in with padding.
+    /// let slice_l0_r1 = bf.slice_with_pad(&BitIndex::new(1, 2), &BitIndex::new(3, 4), BitPad::Zeros, BitPad::Ones);
+    /// let slice_r0_l1 = bf.slice_with_pad(&BitIndex::new(1, 2), &BitIndex::new(3, 4), BitPad::Ones, BitPad::Zeros);
+    ///
+    /// assert_eq!(slice_l0_r1, BitField::from_bin_str("0000 1110 10 11 1111 11"));
+    /// assert_eq!(slice_r0_l1, BitField::from_bin_str("0000 1110 10 00 0000 00"));
+    /// //                                              \----------/ \--------/
+    /// //                                                 from bf    from rpad
+    ///
+    /// // When the slice starts at a negative index, then that portion will be filled in with padding.
+    /// let slice_l0_r1 = bf.slice_with_pad(&-BitIndex::new(1, 2), &BitIndex::new(3, 4), BitPad::Zeros, BitPad::Ones);
+    /// let slice_r0_l1 = bf.slice_with_pad(&-BitIndex::new(1, 2), &BitIndex::new(3, 4), BitPad::Ones, BitPad::Zeros);
+    ///
+    /// assert_eq!(slice_l0_r1, BitField::from_bin_str("00 0000 0000 0101 1100 1100 0011 1010 1111 1111"));
+    /// assert_eq!(slice_r0_l1, BitField::from_bin_str("11 1111 1111 0101 1100 1100 0011 1010 0000 0000"));
+    /// //                                              \----------/ \----------------------/ \--------/
+    /// //                                                from lpad          from bf           from rpad
+    ///
+    /// // When the slice is fully negative, then it will be filled in completely with rpad
+    /// let slice_l0_r1 = bf.slice_with_pad(&-BitIndex::new(1, 2), &-BitIndex::new(0, 2), BitPad::Zeros, BitPad::Ones);
+    /// let slice_r0_l1 = bf.slice_with_pad(&-BitIndex::new(1, 2), &-BitIndex::new(0, 2), BitPad::Ones, BitPad::Zeros);
+    ///
+    /// assert_eq!(slice_l0_r1, BitField::from_bin_str("0000 0000"));
+    /// assert_eq!(slice_r0_l1, BitField::from_bin_str("1111 1111"));
+    /// //                                              \-------/
+    /// //                                              from lpad
+    ///```
+    pub fn slice_with_pad(&self, start: &BitIndex, end: &BitIndex, lpad: BitPad, rpad: BitPad) -> BitField {
         if start.is_negative() {
-            let mut slice = pad.bit_field(start.abs());
-            slice.extend(&self.slice_with_rpad(&BitIndex::zero(), end, pad));
-            slice
+            if end.is_negative() {
+                lpad.bit_field(end - start)
+            } else {
+                let mut slice = lpad.bit_field(start.abs());
+                slice.extend(&self.slice_with_rpad(&BitIndex::zero(), end, rpad));
+                slice
+            }
+            
         } else {
-            self.slice_with_rpad(&BitIndex::zero(), end, pad)
+            self.slice_with_rpad(start, end, rpad)
         }
     }
 
