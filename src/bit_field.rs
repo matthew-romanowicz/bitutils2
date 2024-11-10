@@ -1287,6 +1287,101 @@ impl BitField {
         return negative
     }
 
+    /// Converts the data contained within `self` to a little-endian unsigned
+    /// integer by removing the sign information according to the source
+    /// format provided. Returns `true` if the sign was negative before being
+    /// removed, even if the magnitude is `0`. Returns `false` if the sign was
+    /// positive, even if the magnitude is `0`.
+    ///
+    /// If the source format is `Unsigned`, then `self` is not mutated and 
+    /// `false` is returned.
+    pub fn convert_unsigned_le(&mut self, src_format: IntFormat) -> bool {
+        let mut negative: bool;
+
+        let msb = BitIndex::new(self.len().ceil().byte() - 1, 0);
+
+        match src_format {
+            IntFormat::SignMagnitude => {
+                negative = self.bit_at(&msb) != 0;
+                self.v[msb.byte()] &= 0x7f;
+            },
+            IntFormat::OnesCompliment => {
+                negative = self.bit_at(&msb) != 0;
+                if negative {
+                    for b in self.v.iter_mut() {
+                        *b ^= 0xff;
+                    }
+                    if !self.length.is_byte_boundary() {
+                        let last_byte = self.v.len() - 1;
+                        self.v[last_byte] &= 0xff << self.length.cbit();
+                    }
+                }
+            },
+            IntFormat::TwosCompliment => {
+                negative = self.bit_at(&msb) != 0;
+                if negative {
+                    let mut carry = true;
+                    for b in self.v.iter_mut() {
+                        if carry {
+                            (*b, carry) = b.overflowing_sub(1);
+                        }
+                        *b ^= 0xff;
+                    }
+                    if !self.length.is_byte_boundary() {
+                        let last_byte = self.v.len() - 1;
+                        self.v[last_byte] &= 0xff << self.length.cbit();
+                    }
+                } 
+            },
+            IntFormat::Unsigned => {
+                negative = false
+            },
+            IntFormat::BaseMinusTwo => {
+                // If the BitField ends with an odd number of bits, then
+                // it needs to be accounted for since the bits are counted 
+                // from the LSB, so which bits are even and odd will be switched 
+                // in the leftmost byte
+                let odd_bits = self.length.bit() & 0x01 != 0;
+
+                let last_byte = self.v.len() - 1;
+
+                // Iterate through from the most significant to least
+                // significant bytes to tell whether the highest value
+                // bit is negative or positive. This will determine the
+                // sign of the result. Also record the location of the
+                // MSB so that we can save some iterations in the subtration
+                negative = false;
+                let mut num_significant_bytes = self.v.len();
+                for (i, b) in self.v.iter().rev().enumerate() {
+                    if *b != 0 {
+                        negative = ((*b & 0xaa) > (*b & 0x55)) ^ (odd_bits && i == last_byte);
+                        num_significant_bytes -= i;
+                        break;
+                    }
+                }
+
+                // Subtract the even bits from the odd bits if positive,
+                // and vice versa if negative to guarantee a positive result.
+                let mut carry = false;
+                let mut minuend;
+                let mut subtrahend;
+                for (i, b) in self.v.iter_mut().enumerate().take(num_significant_bytes) {
+                    (minuend, subtrahend) = match negative ^ (odd_bits && i == last_byte) {
+                        true => (*b & 0xaa, *b & 0x55),
+                        false => (*b & 0x55, *b & 0xaa)
+                    };
+                    if carry {
+                        subtrahend += 1;
+                    }
+                    (*b, carry) = minuend.overflowing_sub(subtrahend);
+                    
+                }
+            }
+        }
+
+        return negative
+    }
+
     /// Pads `self` to the specified length in such a way that when interpreted
     /// as an unsigned big-endian integer, the value is unchanged. More specifically,
     /// `self` is extended to the new length by padding the left side with zeros.
@@ -1345,7 +1440,7 @@ impl BitField {
     pub fn pad_unsigned_le(&mut self, new_length: BitIndex) {
         if self.length < new_length {
 
-            // Pad the left side with zeros to he new length
+            // Pad the left side with zeros to the new length
             let pad = BitField::zeros(new_length - self.length);
             let old_length = self.length.clone();
             self.extend(&pad);
@@ -1610,7 +1705,7 @@ impl BitIndexable for BitField {
         } else {
             for i in start_byte..end_byte {
                 let carry = if i + 1 < self.v.len() {self.v[i+1] >> start_cbit} else {0};
-                println!("{} {}", i, carry);
+                // println!("{} {}", i, carry);
                 res.push((self.v[i] << start_bit) | carry);
             }
         }
@@ -2022,12 +2117,22 @@ impl std::ops::ShrAssign<usize> for BitField  {
 }
 
 pub trait FromBitField {
-    fn from_bf(bf: &BitField) -> Self;
+    fn from_bf_be(bf: &BitField) -> Self;
+    fn from_bf_le(bf: &BitField) -> Self;
 }
 
 impl FromBitField for u8 {
 
-    fn from_bf(bf: &BitField) -> u8 {
+    fn from_bf_be(bf: &BitField) -> u8 {
+        let b = bf.len().bit();
+        if b == 0 {
+            bf.v[0]
+        } else {
+            bf.v[0] >> (8 - b)
+        }
+    }
+
+    fn from_bf_le(bf: &BitField) -> u8 {
         let b = bf.len().bit();
         if b == 0 {
             bf.v[0]
@@ -2692,7 +2797,7 @@ mod bit_field_tests {
     }
 
     #[test]
-    fn int_conversions() {
+    fn int_conversions_be() {
         let mut bf = BitField::from_hex_str("00 01 e2 40"); // +123456 in sign-magnitude
         assert_eq!(bf.convert_unsigned_be(IntFormat::SignMagnitude), false);
         assert_eq!(u32::from_be_bytes(bf.into_array().unwrap()), 123456);
@@ -2700,7 +2805,7 @@ mod bit_field_tests {
         for i in 32..64 {
             let mut bf = BitField::from_hex_str("00 01 e2 40"); // +123456 in sign-magnitude
             bf.pad_sign_magnitude_be(BitIndex::bits(i));
-            assert_eq!(bf.convert_unsigned_be(IntFormat::TwosCompliment), false);
+            assert_eq!(bf.convert_unsigned_be(IntFormat::SignMagnitude), false);
             bf.pad_unsigned_be(BitIndex::new(8, 0));
             assert_eq!(u64::from_be_bytes(bf.into_array().unwrap()), 123456);
         }
@@ -2788,6 +2893,106 @@ mod bit_field_tests {
             assert_eq!(bf.convert_unsigned_be(IntFormat::BaseMinusTwo), true);
             bf.pad_unsigned_be(BitIndex::new(8, 0));
             assert_eq!(u64::from_be_bytes(bf.into_array().unwrap()), 123456);
+        }
+    }
+
+    #[test]
+    fn int_conversions_le() {
+        let mut bf = BitField::from_hex_str("40 e2 01 00"); // +123456 in sign-magnitude
+        assert_eq!(bf.convert_unsigned_le(IntFormat::SignMagnitude), false);
+        assert_eq!(u32::from_le_bytes(bf.into_array().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("40 e2 01 00"); // +123456 in sign-magnitude
+            bf.pad_sign_magnitude_le(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_le(IntFormat::SignMagnitude), false);
+            bf.pad_unsigned_le(BitIndex::new(8, 0));
+            assert_eq!(u64::from_le_bytes(bf.into_array().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("40 e2 01 80"); // -123456 in sign-magnitude
+        assert_eq!(bf.convert_unsigned_le(IntFormat::SignMagnitude), true);
+        assert_eq!(u32::from_le_bytes(bf.into_array().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("40 e2 01 80"); // -123456 in sign-magnitude
+            bf.pad_sign_magnitude_le(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_le(IntFormat::SignMagnitude), true);
+            bf.pad_unsigned_le(BitIndex::new(8, 0));
+            assert_eq!(u64::from_le_bytes(bf.into_array().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("40 e2 01 00"); // +123456 in two's complement
+        assert_eq!(bf.convert_unsigned_le(IntFormat::TwosCompliment), false);
+        assert_eq!(u32::from_le_bytes(bf.into_array().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("40 e2 01 00"); // +123456 in two's complement
+            bf.pad_twos_compliment_le(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_le(IntFormat::TwosCompliment), false);
+            bf.pad_unsigned_le(BitIndex::new(8, 0));
+            assert_eq!(u64::from_le_bytes(bf.into_array().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("c0 1d fe ff"); // -123456 in two's complement
+        assert_eq!(bf.convert_unsigned_le(IntFormat::TwosCompliment), true);
+        assert_eq!(u32::from_le_bytes(bf.into_array().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("c0 1d fe ff"); // -123456 in two's complement
+            bf.pad_twos_compliment_le(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_le(IntFormat::TwosCompliment), true);
+            bf.pad_unsigned_le(BitIndex::new(8, 0));
+            assert_eq!(u64::from_le_bytes(bf.into_array().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("40 e2 01 00"); // +123456 in one's complement
+        assert_eq!(bf.convert_unsigned_le(IntFormat::OnesCompliment), false);
+        assert_eq!(u32::from_le_bytes(bf.into_array().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("40 e2 01 00"); // +123456 in one's complement
+            bf.pad_twos_compliment_le(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_le(IntFormat::OnesCompliment), false);
+            bf.pad_unsigned_le(BitIndex::new(8, 0));
+            assert_eq!(u64::from_le_bytes(bf.into_array().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("bf 1d fe ff"); // -123456 in one's complement
+        assert_eq!(bf.convert_unsigned_le(IntFormat::OnesCompliment), true);
+        assert_eq!(u32::from_le_bytes(bf.into_array().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("bf 1d fe ff"); // -123456 in one's complement
+            bf.pad_twos_compliment_le(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_le(IntFormat::OnesCompliment), true);
+            bf.pad_unsigned_le(BitIndex::new(8, 0));
+            assert_eq!(u64::from_le_bytes(bf.into_array().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("40 26 06 00"); // +123456 in base -2
+        assert_eq!(bf.convert_unsigned_le(IntFormat::BaseMinusTwo), false);
+        assert_eq!(u32::from_le_bytes(bf.into_array().unwrap()), 123456);
+
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("40 26 06 00"); // +123456 in base -2
+            bf.pad_unsigned_le(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_le(IntFormat::BaseMinusTwo), false);
+            bf.pad_unsigned_le(BitIndex::new(8, 0));
+            assert_eq!(u64::from_le_bytes(bf.into_array().unwrap()), 123456);
+        }
+
+        let mut bf = BitField::from_hex_str("c0 62 02 00"); // -123456 in base -2
+        assert_eq!(bf.convert_unsigned_le(IntFormat::BaseMinusTwo), true);
+        assert_eq!(u32::from_le_bytes(bf.into_array().unwrap()), 123456);
+
+        for i in 32..64 {
+            let mut bf = BitField::from_hex_str("c0 62 02 00"); // -123456 in base -2
+            bf.pad_unsigned_le(BitIndex::bits(i));
+            assert_eq!(bf.convert_unsigned_le(IntFormat::BaseMinusTwo), true);
+            bf.pad_unsigned_le(BitIndex::new(8, 0));
+            assert_eq!(u64::from_le_bytes(bf.into_array().unwrap()), 123456);
         }
     }
 }  
