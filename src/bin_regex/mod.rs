@@ -42,9 +42,10 @@
 //!
 //! ### Character Classes
 //!<pre class="rust">
-//! [ascii:xyzA-Z3-9]
-//! [u8:1,2,3,4..10]
-//! 
+//! [a8:xyzA-Z3-9]    => 8-bit ASCII
+//! [u8:1,2,3,4..10]  => 8-bit unsigned integer
+//! [i8:1,2,3,4..10]  => 8-bit two's compliment integer
+//! [i8:1,2,3,4..10]  => 8-bit one's compliment integer
 //!</pre>
 //!
 //! # Compositions
@@ -53,12 +54,14 @@
 //! xy       => Matches x followed by y
 //!</pre>
 
+use std::collections::HashSet;
+
 mod parse_helpers;
 use crate::bin_regex::parse_helpers::{EscapeIter, escape_vec, find_right_delimiter};
 
 use crate::bx;
 use crate::bit_index::{BitIndex, BitIndexable};
-use crate::bit_field::{BitField, FromBitField};
+use crate::bit_field::{IntFormat, BitField, FromBitField};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Greediness {
@@ -80,18 +83,31 @@ enum GroupType {
     Named(String)
 }
 
-// enum DynamicCharacterClass {
-//     U8(CharClass<UIntBe>),
-//     U16(CharClass<u16>),
-//     U32(CharClass<u32>),
-//     U64(CharClass<u64>),
-//     I8(CharClass<i8>),
-//     I16(CharClass<i16>),
-//     I32(CharClass<i32>),
-//     I64(CharClass<i64>),
-//     F32(CharClass<f32>),
-//     F64(CharClass<f64>),
-// }
+
+#[derive(Debug, PartialEq)]
+enum DynamicCharacterClass {
+    UInt(CharClass<UInt>),
+    TwosCompInt(CharClass<TwosCompInt>),
+    OnesCompInt(CharClass<OnesCompInt>)
+}
+
+impl DynamicCharacterClass {
+    fn input_length(&self) -> BitIndex {
+        match self {
+            DynamicCharacterClass::UInt(cls) => cls.input_length(),
+            DynamicCharacterClass::TwosCompInt(cls) => cls.input_length(),
+            DynamicCharacterClass::OnesCompInt(cls) => cls.input_length()
+        }
+    }
+
+    fn matches(&self, input: &BitField) -> bool {
+        match self {
+            DynamicCharacterClass::UInt(cls) => cls.matches(input),
+            DynamicCharacterClass::TwosCompInt(cls) => cls.matches(input),
+            DynamicCharacterClass::OnesCompInt(cls) => cls.matches(input)
+        }
+    }
+}
 
 trait MyTrait: std::str::FromStr + std::cmp::Ord + std::hash::Hash + FromBitField + std::fmt::Debug {}
 
@@ -100,7 +116,7 @@ enum Token {
     Repetition(Repeat, Box<Token>),
     Group(Option<usize>, Vec<Token>),
     Choice(Vec<Token>),
-    CharacterClass(std::rc::Rc<CharClass<UIntBe>>),
+    CharacterClass(std::rc::Rc<DynamicCharacterClass>),
     Nibble(u8),
     ByteBoundary,
     NibbleBoundary,
@@ -123,7 +139,7 @@ enum StateTransition {
     EqualsBit(u8),
     EqualsNibble(u8),
     ConsumeBits(usize),
-    CharacterClass(std::rc::Rc<CharClass<UIntBe>>)
+    CharacterClass(std::rc::Rc<DynamicCharacterClass>)
 }
 
 enum TextEncoding {
@@ -147,7 +163,7 @@ enum TextEncoding {
 // #[derive(PartialEq, Eq, Debug)]
 // struct U8CharClass {
 //     inverted: bool,
-//     options: std::collections::HashSet<UIntBe>,
+//     options: std::collections::HashSet<UInt>,
 //     ranges: Vec<(u8, u8)>
 // }
 
@@ -168,21 +184,23 @@ enum TextEncoding {
 // }
 
 // #[derive(std::hash::Hash, Debug)]
-// struct UIntBe {
+// struct UInt {
 //     inner: u128
 // }
 
-// impl std::str::FromStr for UIntBe {
+// impl std::str::FromStr for UInt {
 //     type Err = std::num::ParseIntError;
 
 //     fn from_str(s: &str) -> Result<Self, Self::Err> {
-//         Ok(UIntBe{inner: u128::from_str(s)?})
+//         Ok(UInt{inner: u128::from_str(s)?})
 //     }
 // }
 
-type UIntBe = u128;
-impl FromBitField for UIntBe {
-    fn from_bf(bf: &BitField) -> UIntBe {
+#[derive(PartialEq, Eq, Ord, std::hash::Hash, Clone, Debug)]
+struct UInt(u128);
+
+impl FromBitField for UInt {
+    fn from_bf_be(bf: &BitField) -> UInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
@@ -191,17 +209,142 @@ impl FromBitField for UIntBe {
             bf.pad_unsigned_be(BitIndex::bits(128));
         }
 
-        u128::from_be_bytes(bf.into_array().unwrap())
+        UInt(u128::from_be_bytes(bf.into_array().unwrap()))
+    }
+
+    fn from_bf_le(bf: &BitField) -> UInt {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            bf.pad_unsigned_le(BitIndex::bits(128));
+        }
+
+        UInt(u128::from_le_bytes(bf.into_array().unwrap()))
     }
 }
 
-// impl Ord for UIntBe {
+impl std::str::FromStr for UInt {
+    type Err = std::num::ParseIntError;
 
-// }
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(UInt(u128::from_str(s)?))
+    }
+}
+
+impl std::cmp::PartialOrd for UInt {
+    fn partial_cmp(&self, other: &UInt) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+#[derive(PartialEq, Eq, Ord, std::hash::Hash, Clone, Debug)]
+struct TwosCompInt(i128);
+
+impl FromBitField for TwosCompInt {
+    fn from_bf_be(bf: &BitField) -> TwosCompInt {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            bf.pad_twos_compliment_be(BitIndex::bits(128));
+        }
+
+        TwosCompInt(i128::from_be_bytes(bf.into_array().unwrap()))
+    }
+
+    fn from_bf_le(bf: &BitField) -> TwosCompInt {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            bf.pad_twos_compliment_le(BitIndex::bits(128));
+        }
+
+        TwosCompInt(i128::from_le_bytes(bf.into_array().unwrap()))
+    }
+}
+
+impl std::str::FromStr for TwosCompInt {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(TwosCompInt(i128::from_str(s)?))
+    }
+}
+
+impl std::cmp::PartialOrd for TwosCompInt {
+    fn partial_cmp(&self, other: &TwosCompInt) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+#[derive(PartialEq, Eq, Ord, std::hash::Hash, Clone, Debug)]
+struct OnesCompInt(i128);
+
+impl FromBitField for OnesCompInt {
+    fn from_bf_be(bf: &BitField) -> OnesCompInt {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            bf.pad_twos_compliment_be(BitIndex::bits(128));
+        }
+
+        let neg = bf.convert_unsigned_be(IntFormat::OnesCompliment);
+        let mut i = u128::from_be_bytes(bf.into_array().unwrap()) as i128;
+        if neg {
+            i *= -1
+        }
+        OnesCompInt(i)
+    }
+
+    fn from_bf_le(bf: &BitField) -> OnesCompInt {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            bf.pad_twos_compliment_le(BitIndex::bits(128));
+        }
+
+        let neg = bf.convert_unsigned_le(IntFormat::OnesCompliment);
+        let mut i = u128::from_be_bytes(bf.into_array().unwrap()) as i128;
+        if neg {
+            i *= -1
+        }
+        OnesCompInt(i)
+    }
+}
+
+impl std::str::FromStr for OnesCompInt {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(OnesCompInt(i128::from_str(s)?))
+    }
+}
+
+impl std::cmp::PartialOrd for OnesCompInt {
+    fn partial_cmp(&self, other: &OnesCompInt) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+#[derive(PartialEq, Eq, Debug)]
+enum Endian {
+    Big,
+    Little
+}
 
 #[derive(PartialEq, Eq, Debug)]
 struct CharClass<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField> {
     inverted: bool,
+    endian: Endian,
     options: std::collections::HashSet<T>,
     ranges: Vec<(T, T)>,
     input_length: BitIndex
@@ -213,7 +356,10 @@ impl<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Deb
     }
 
     fn matches(&self, input: &BitField) -> bool {
-        let x: T = T::from_bf(input);
+        let x: T = match self.endian {
+            Endian::Big => T::from_bf_be(input),
+            Endian::Little => T::from_bf_le(input)
+        };
         //println!("TRYING TO MATCH {:?}", x);
         if self.options.contains(&x) {
             return !self.inverted
@@ -227,11 +373,11 @@ impl<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Deb
     }
 }
 
-fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<UIntBe>, String> {
+fn parse_ascii_char_class(input: &Vec<char>, endian: Endian) -> Result<CharClass<UInt>, String> {
     let mut input_iter = escape_vec(input).peekable();
-    let mut options = std::collections::HashSet::<UIntBe>::new();
-    let mut ranges = Vec::<(UIntBe, UIntBe)>::new();
-    let mut prev_char: Option<UIntBe> = None;
+    let mut options = std::collections::HashSet::<UInt>::new();
+    let mut ranges = Vec::<(UInt, UInt)>::new();
+    let mut prev_char: Option<UInt> = None;
     let mut escaped = false;
     let mut range_started = false;
 
@@ -246,8 +392,8 @@ fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<UIntBe>, String
         match c {
             '-' if !escaped => {
                 match prev_char {
-                    Some(p) if range_started => return Err("Unexpected '-' encountered after '-'".to_string()),
-                    Some(p) => {
+                    Some(ref p) if range_started => return Err("Unexpected '-' encountered after '-'".to_string()),
+                    Some(ref p) => {
                         range_started = true;
                         continue
                     },
@@ -256,8 +402,8 @@ fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<UIntBe>, String
             },
             _ if range_started => {
                 match prev_char {
-                    Some(p) => {
-                        ranges.push((p as UIntBe, c as UIntBe));
+                    Some(ref p) => {
+                        ranges.push((p.clone(), UInt(c as u128)));
                         prev_char = None;
                     },
                     None => return Err("Impossible state".to_string())
@@ -265,24 +411,24 @@ fn parse_ascii_char_class(input: &Vec<char>) -> Result<CharClass<UIntBe>, String
             },
             _ => {
                 match prev_char {
-                    Some(p) => {
-                        options.insert(p as UIntBe);
+                    Some(ref p) => {
+                        options.insert(p.clone());
                     },
                     None => ()
                 }
-                prev_char = Some(c as UIntBe);
+                prev_char = Some(UInt(c as u128));
             }
         }
         range_started = false;
 
     }
     match prev_char {
-        Some(p) => {
-            options.insert(p as UIntBe);
+        Some(ref p) => {
+            options.insert(p.clone());
         },
         None => ()
     }
-    Ok(CharClass::<UIntBe> {inverted, options, ranges, input_length: BitIndex::new(1, 0)})
+    Ok(CharClass::<UInt> {inverted, endian, options, ranges, input_length: BitIndex::new(1, 0)})
 }
 
 enum RangeParseProgress<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug> {
@@ -291,7 +437,7 @@ enum RangeParseProgress<T: std::str::FromStr + Ord + std::hash::Hash + FromBitFi
     TwoDot(T)
 }
 
-fn parse_uint_char_class<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug>(input: &Vec<char>, nbits: usize) -> Result<CharClass<T>, String>
+fn parse_int_char_class<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug>(input: &Vec<char>, nbits: usize, endian: Endian) -> Result<CharClass<T>, String>
 where <T as std::str::FromStr>::Err: std::fmt::Display {
     let input_length = bx!(,nbits);
     let mut input_iter = escape_vec(input).peekable();
@@ -313,6 +459,7 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
         }
         match c {
             ',' => {
+                println!("Prev word: {}", prev_word.iter().collect::<String>());
                 match prev_word.iter().collect::<String>().parse::<T>() {
                     Ok(n) => {
                         match range_prog {
@@ -333,6 +480,7 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
             '.' => {
                 match range_prog {
                     RangeParseProgress::NotStarted => {
+                        println!("Prev word: {}", prev_word.iter().collect::<String>());
                         match prev_word.iter().collect::<String>().parse::<T>() {
                             Ok(n) => {
                                 range_prog = RangeParseProgress::OneDot(n);
@@ -352,7 +500,7 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
                     }
                 }
             },
-            '0'..='9' => {
+            '-' | '+' | '0'..='9' => {
                 match range_prog {
                     RangeParseProgress::OneDot(n0) => {
                         return Err(format!("Encountered unexpected character '{}' while parsing range", c))
@@ -369,6 +517,7 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
     if prev_word.is_empty() {
         return Err("Encountered end of character class before expected".to_string())
     }
+    println!("Last word: '{}'", prev_word.iter().collect::<String>());
     match prev_word.iter().collect::<String>().parse::<T>() {
         Ok(n) => {
             match range_prog {
@@ -384,32 +533,65 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
         Err(msg) => return Err(msg.to_string())
     }
 
-    Ok(CharClass::<T> {inverted, options, ranges, input_length})
+    Ok(CharClass::<T> {inverted, endian, options, ranges, input_length})
 }
 
 fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
     let mut from_start = Vec::<char>::new();
     for (i, c) in input.iter().enumerate() {
         match c {
-            '0'..='9'|'a'..='z'|'A'..='Z' => {
+            '<' | '>' | '0'..='9'|'a'..='z'|'A'..='Z' => {
                 from_start.push(*c);
             },
             ':' => {
-                match from_start[1..].iter().collect::<String>().parse::<usize>() {
+                let mut char_class_type_index = 0;
+                let endian = match from_start[0] {
+                    '<' => {
+                        char_class_type_index += 1;
+                        Endian::Little
+                    },
+                    '>' => {
+                        char_class_type_index += 1;
+                        Endian::Big
+                    },
+                    _ => Endian::Big
+                };
+
+                match from_start[(char_class_type_index + 1)..].iter().collect::<String>().parse::<usize>() {
                     Ok(n) => {
-                        match from_start[0] {
+                        match from_start[char_class_type_index] {
                             'a' => {
-                                match parse_ascii_char_class(&input[i+1..].to_vec()) {
+                                let cls_result = parse_ascii_char_class(&input[i+1..].to_vec(), endian);
+                                match cls_result {
                                     Ok(cls) => {
-                                        return Ok(Token::CharacterClass(std::rc::Rc::new(cls)))
+                                        return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::UInt(cls))))
                                     },
                                     Err(msg) => return Err(msg)
                                 }
                             },
                             'u' => {
-                                match parse_uint_char_class::<UIntBe>(&input[i+1..].to_vec(), n) {
+                                let cls_result = parse_int_char_class::<UInt>(&input[i+1..].to_vec(), n, endian);
+                                match cls_result {
                                     Ok(cls) => {
-                                        return Ok(Token::CharacterClass(std::rc::Rc::new(cls)))
+                                        return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::UInt(cls))))
+                                    },
+                                    Err(msg) => return Err(msg)
+                                }
+                            },
+                            'i' => {
+                                let cls_result = parse_int_char_class::<TwosCompInt>(&input[i+1..].to_vec(), n, endian);
+                                match cls_result {
+                                    Ok(cls) => {
+                                        return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::TwosCompInt(cls))))
+                                    },
+                                    Err(msg) => return Err(msg)
+                                }
+                            },
+                            'o' => {
+                                let cls_result = parse_int_char_class::<OnesCompInt>(&input[i+1..].to_vec(), n, endian);
+                                match cls_result {
+                                    Ok(cls) => {
+                                        return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::OnesCompInt(cls))))
                                     },
                                     Err(msg) => return Err(msg)
                                 }
@@ -423,9 +605,9 @@ fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
             _ => break
         }
     }
-    match parse_ascii_char_class(input) {
+    match parse_ascii_char_class(input, Endian::Big) {
         Ok(cls) => {
-            Ok(Token::CharacterClass(std::rc::Rc::new(cls)))
+            Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::UInt(cls))))
         },
         Err(msg) => Err(msg)
     }
@@ -1364,30 +1546,144 @@ mod tests {
     use super::*;
 
     #[test]
-    fn u8_char_class() {
+    fn uint_be_char_class() {
         let input = "u5:0,1,23".chars().collect();
-        let res = parse_char_class(&input);
-        let mut options = std::collections::HashSet::new();
-        options.insert(0);
-        options.insert(1);
-        options.insert(23);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![], input_length: bx!(,5)}))));
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: false, 
+            endian: Endian::Big, 
+            options: HashSet::from([UInt(0), UInt(1), UInt(23)]),
+            ranges: vec![], 
+            input_length: bx!(,5)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
 
-        let input = "u6:^0,1,23".chars().collect();
-        let res = parse_char_class(&input);
-        let mut options = std::collections::HashSet::new();
-        options.insert(0);
-        options.insert(1);
-        options.insert(23);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: true, options, ranges: vec![], input_length: bx!(,6)}))));
+        let input = ">u6:^0,1,23".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: true, 
+            endian: Endian::Big, 
+            options: HashSet::from([UInt(0), UInt(1), UInt(23)]), 
+            ranges: vec![], 
+            input_length: bx!(,6)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
 
         let input = "u8:^0,50..64,1,23,100..128".chars().collect();
-        let res = parse_char_class(&input);
-        let mut options = std::collections::HashSet::new();
-        options.insert(0);
-        options.insert(1);
-        options.insert(23);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: true, options, ranges: vec![(50,64), (100, 128)], input_length: bx!(,8)}))));
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: true, 
+            endian: Endian::Big, 
+            options: HashSet::from([UInt(0), UInt(1), UInt(23)]),  
+            ranges: vec![(UInt(50),UInt(64)), (UInt(100), UInt(128))], 
+            input_length: bx!(,8)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
+
+        let input = ">u120:^0,51230..641234,1,23000,100..128".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: true, 
+            endian: Endian::Big,
+            options: HashSet::from([UInt(0), UInt(1), UInt(23000)]),  
+            ranges: vec![(UInt(51230),UInt(641234)), (UInt(100), UInt(128))], 
+            input_length: bx!(,120)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
+    }
+
+    #[test]
+    fn uint_le_char_class() {
+        let input = "<u5:0,1,23".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: false, 
+            endian: Endian::Little, 
+            options: HashSet::from([UInt(0), UInt(1), UInt(23)]),
+            ranges: vec![], 
+            input_length: bx!(,5)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
+
+        let input = "<u6:^0,1,23".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: true, 
+            endian: Endian::Little, 
+            options: HashSet::from([UInt(0), UInt(1), UInt(23)]), 
+            ranges: vec![], 
+            input_length: bx!(,6)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
+
+        let input = "<u8:^0,50..64,1,23,100..128".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: true, 
+            endian: Endian::Little, 
+            options: HashSet::from([UInt(0), UInt(1), UInt(23)]),  
+            ranges: vec![(UInt(50),UInt(64)), (UInt(100), UInt(128))], 
+            input_length: bx!(,8)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
+
+        let input = "<u120:^0,51230..641234,1,23000,100..128".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: true, 
+            endian: Endian::Little,
+            options: HashSet::from([UInt(0), UInt(1), UInt(23000)]),  
+            ranges: vec![(UInt(51230),UInt(641234)), (UInt(100), UInt(128))], 
+            input_length: bx!(,120)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
+    }
+
+    #[test]
+    fn twos_compliment_be_char_class() {
+        let input = "i5:0,-1,+23".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::TwosCompInt(CharClass::<TwosCompInt>{
+            inverted: false, 
+            endian: Endian::Big, 
+            options: HashSet::from([TwosCompInt(0), TwosCompInt(-1), TwosCompInt(23)]),
+            ranges: vec![], 
+            input_length: bx!(,5)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
+
+        let input = ">i6:^+0,1,-23".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::TwosCompInt(CharClass::<TwosCompInt>{
+            inverted: true, 
+            endian: Endian::Big, 
+            options: HashSet::from([TwosCompInt(0), TwosCompInt(1), TwosCompInt(-23)]), 
+            ranges: vec![], 
+            input_length: bx!(,6)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
+
+        let input = "i8:^-0,-50..+64,-1,+23,-130..-100".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::TwosCompInt(CharClass::<TwosCompInt>{
+            inverted: true, 
+            endian: Endian::Big, 
+            options: HashSet::from([TwosCompInt(0), TwosCompInt(-1), TwosCompInt(23)]),  
+            ranges: vec![(TwosCompInt(-50), TwosCompInt(64)), (TwosCompInt(-130), TwosCompInt(-100))], 
+            input_length: bx!(,8)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
+
+        let input = ">i120:^+0,-521230..-641234,1,-23000,+100..128".chars().collect();
+        let res = parse_char_class(&input).unwrap();
+        let cls = DynamicCharacterClass::TwosCompInt(CharClass::<TwosCompInt>{
+            inverted: true, 
+            endian: Endian::Big,
+            options: HashSet::from([TwosCompInt(0), TwosCompInt(1), TwosCompInt(-23000)]),  
+            ranges: vec![(TwosCompInt(-521230), TwosCompInt(-641234)), (TwosCompInt(100), TwosCompInt(128))], 
+            input_length: bx!(,120)
+        });
+        assert_eq!(res, Token::CharacterClass(std::rc::Rc::new(cls)));
     }
 
     #[test]
@@ -1395,54 +1691,96 @@ mod tests {
         let input = "abc".chars().collect();
         let res = parse_char_class(&input);
         let mut options = std::collections::HashSet::new();
-        options.insert(97);
-        options.insert(98);
-        options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![], input_length: bx!(,8)}))));
+        options.insert(UInt(97));
+        options.insert(UInt(98));
+        options.insert(UInt(99));
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: false, 
+            endian: Endian::Big, 
+            options, 
+            ranges: vec![], 
+            input_length: bx!(,8)
+        });
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(cls))));
 
         let input = "a8:^abc".chars().collect();
         let res = parse_char_class(&input);
         let mut options = std::collections::HashSet::new();
-        options.insert(97);
-        options.insert(98);
-        options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: true, options, ranges: vec![], input_length: bx!(,8)}))));
+        options.insert(UInt(97));
+        options.insert(UInt(98));
+        options.insert(UInt(99));
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: true, 
+            endian: Endian::Big, 
+            options, 
+            ranges: vec![], 
+            input_length: bx!(,8)
+        });
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(cls))));
 
         let input = "\\\\a\\bc".chars().collect();
         let res = parse_char_class(&input);
         let mut options = std::collections::HashSet::new();
-        options.insert(92);
-        options.insert(97);
-        options.insert(98);
-        options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![], input_length: bx!(,8)}))));
+        options.insert(UInt(92));
+        options.insert(UInt(97));
+        options.insert(UInt(98));
+        options.insert(UInt(99));
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: false, 
+            endian: Endian::Big, 
+            options, 
+            ranges: vec![], 
+            input_length: bx!(,8)
+        });
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(cls))));
 
         let input = "a8:abc0-9".chars().collect();
         let res = parse_char_class(&input);
         let mut options = std::collections::HashSet::new();
-        options.insert(97);
-        options.insert(98);
-        options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![(48, 57)], input_length: bx!(,8)}))));
+        options.insert(UInt(97));
+        options.insert(UInt(98));
+        options.insert(UInt(99));
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: false, 
+            endian: Endian::Big, 
+            options, 
+            ranges: vec![(UInt(48), UInt(57))], 
+            input_length: bx!(,8)
+        });
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(cls))));
 
         let input = "abc0-9\\--z".chars().collect();
         let res = parse_char_class(&input);
         let mut options = std::collections::HashSet::new();
-        options.insert(97);
-        options.insert(98);
-        options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: false, options, ranges: vec![(48, 57), (45, 122)], input_length: bx!(,8)}))));
+        options.insert(UInt(97));
+        options.insert(UInt(98));
+        options.insert(UInt(99));
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: false, 
+            endian: Endian::Big, 
+            options, 
+            ranges: vec![(UInt(48), UInt(57)), (UInt(45), UInt(122))], 
+            input_length: bx!(,8)
+        });
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(cls))));
 
         let input = "a8:^0-9abc0-9d\\--zef".chars().collect();
         let res = parse_char_class(&input);
         let mut options = std::collections::HashSet::new();
-        options.insert(97);
-        options.insert(98);
-        options.insert(99);
-        options.insert(100);
-        options.insert(101);
-        options.insert(102);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<UIntBe>{inverted: true, options, ranges: vec![(48, 57), (48, 57), (45, 122)], input_length: bx!(,8)}))));
+        options.insert(UInt(97));
+        options.insert(UInt(98));
+        options.insert(UInt(99));
+        options.insert(UInt(100));
+        options.insert(UInt(101));
+        options.insert(UInt(102));
+        let cls = DynamicCharacterClass::UInt(CharClass::<UInt>{
+            inverted: true, 
+            endian: Endian::Big, 
+            options, 
+            ranges: vec![(UInt(48), UInt(57)), (UInt(48), UInt(57)), (UInt(45), UInt(122))], 
+            input_length: bx!(,8)
+        });
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(cls))));
     }
 
     #[test]
