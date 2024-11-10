@@ -2,9 +2,35 @@ use std::str::FromStr;
 
 pub use crate::bit_field::BitField;
 
-/// Helper function for initializing [`BitIndex`](crate::BitIndex)
-pub fn bx(bits: usize) -> BitIndex {
-    BitIndex::new(bits >> 3, (bits & 0x07) as u8)
+/// Helper function for initializing [`BitIndex`](crate::BitIndex). Depending on arguments
+/// provided, this can be used to initialize a [`BitIndex`](crate::BitIndex) using the bytes,
+/// bits, or both. 
+///
+/// # Examples
+///
+/// ```rust
+/// use bitutils2::{BitIndex, bx};
+///
+/// // If two integers are provided, then they are interpreted as bytes, bits
+/// assert_eq!(bx!(5, 4), BitIndex::new(5, 4));
+///
+/// // If one integer is provided, then it is interpreted as bytes
+/// assert_eq!(bx!(5), BitIndex::new(5, 0));
+///
+/// // If one integer is provided after a comma, then it is interpreted as bits
+/// assert_eq!(bx!(,20), BitIndex::new(2, 4));
+/// ```
+#[macro_export]
+macro_rules! bx {
+    ($bytes:expr, $bits:expr) => {
+       BitIndex::new($bytes, $bits)
+    };
+    (, $bits:expr) => {
+        BitIndex::bits($bits)
+    };
+    ($bytes:expr) => {
+        BitIndex::bytes($bytes)
+    };
 }
 
 
@@ -168,69 +194,69 @@ pub struct BitIndex {
 
 impl BitIndex {
 
-    pub const MAX: BitIndex = BitIndex {sign: Sign::Positive, byte: usize::MAX, bit: 7};
+    pub const MAX: BitIndex = BitIndex::new(usize::MAX, 7);
     pub const MIN: BitIndex = BitIndex {sign: Sign::Negative, byte: usize::MAX, bit: 7};
 
     /// Constructs a new [`BitIndex`](crate::BitIndex) with the specified `byte` and `bit` 
     /// values. The sign of the result is positive.
-    pub fn new(byte: usize, bit: u8) -> BitIndex {
+    pub const fn new(byte: usize, bit: u8) -> BitIndex {
         BitIndex {sign: Sign::Positive, byte, bit}
     }
 
     /// Constructs a new [`BitIndex`](crate::BitIndex) with the specified `byte` value and `bit` 
     /// equal to zero. The sign of the result is positive.
-    pub fn bytes(byte: usize) -> BitIndex {
+    pub const fn bytes(byte: usize) -> BitIndex {
         BitIndex::new(byte, 0)
     }
 
     /// Constructs a new [`BitIndex`](crate::BitIndex) with the specified `bit` value and `byte` 
     /// equal to zero. The sign of the result is positive.
-    pub fn bits(bits: usize) -> BitIndex {
+    pub const fn bits(bits: usize) -> BitIndex {
         BitIndex::new(bits >> 3, (bits & 0x07) as u8)
     }
 
     /// Constructs a new [`BitIndex`](crate::BitIndex) with `byte` and `bit` both equal to zero.
-    pub fn zero() -> BitIndex {
+    pub const fn zero() -> BitIndex {
         BitIndex::new(0, 0)
     }
 
     /// Returns true if the byte and bit indices are both zero, regardless of sign.
-    pub fn is_zero(&self) -> bool {
+    pub const fn is_zero(&self) -> bool {
         self.byte == 0 && self.bit == 0
     }
 
     /// Returns `true` if `self` is positive and `false` if `self` is zero or negative
-    pub fn is_positive(&self) -> bool {
+    pub const fn is_positive(&self) -> bool {
         matches!(self.sign, Sign::Positive) && !self.is_zero()
     }
 
     /// Returns `true` if `self` is negative and `false` if `self` is zero or positive
-    pub fn is_negative(&self) -> bool {
+    pub const fn is_negative(&self) -> bool {
         matches!(self.sign, Sign::Negative) && !self.is_zero()
     }
 
     /// Returns `true` if `self` lies on a byte boundary and `false` otherwise. Functionally
     /// equivalent to `self.bit() == 0`
-    pub fn is_byte_boundary(&self) -> bool {
+    pub const fn is_byte_boundary(&self) -> bool {
         self.bit == 0
     }
 
     /// Returns the bit portion of this [`BitIndex`](crate::BitIndex).
-    pub fn byte(&self) -> usize {
+    pub const fn byte(&self) -> usize {
         self.byte
     }
 
     /// Returns the bit portion of this [`BitIndex`](crate::BitIndex).
-    pub fn bit(&self) -> u8 {
+    pub const fn bit(&self) -> u8 {
         self.bit
     }
 
     /// Returns the compliment of the bit portion of this [`BitIndex`](crate::BitIndex) (`8 - self.bit()`).
-    pub fn cbit(&self) -> u8 {
+    pub const fn cbit(&self) -> u8 {
         8 - self.bit
     }
 
-    pub fn total_bits(&self) -> i128 {
+    pub const fn total_bits(&self) -> i128 {
         let bits = ((self.byte as i128) << 3) + self.bit as i128;
         match self.sign {
             Sign::Positive => bits,
@@ -269,6 +295,11 @@ impl BitIndex {
         }
     }
 
+    /// Returns the absolute value of `self`
+    pub const fn abs(&self) -> BitIndex {
+        BitIndex::new(self.byte(), self.bit())
+    }
+
     /// Sets the bit portion of this [`BitIndex`](crate::BitIndex). `bit` must be less than `8`.
     pub fn set_bit(&mut self, bit: u8) {
         self.bit = bit;
@@ -285,7 +316,7 @@ impl BitIndex {
         *self = *self + nbits;
     }
 
-    pub fn from_i64_bytes(byte: i64) -> BitIndex {
+    pub const fn from_i64_bytes(byte: i64) -> BitIndex {
         if byte < 0 {
             BitIndex {
                 sign: Sign::Negative,
@@ -578,6 +609,20 @@ impl std::ops::AddAssign<&usize> for BitIndex {
     }
 }
 
+impl std::ops::AddAssign<BitIndex> for BitIndex {
+
+    fn add_assign(&mut self, other: BitIndex) {
+        *self = *self + other
+    }
+}
+
+impl std::ops::AddAssign<&BitIndex> for BitIndex {
+
+    fn add_assign(&mut self, other: &BitIndex) {
+        *self = *self + *other
+    }
+}
+
 // impl std::ops::AddAssign<usize> for BitIndex {
 
 //     fn add_assign(&mut self, other: usize) {
@@ -721,6 +766,13 @@ mod bit_index_tests {
     use super::*;
 
     #[test]
+    fn bx_test() {
+        assert_eq!(bx!(10, 3), BitIndex::new(10, 3));
+        assert_eq!(bx!(10), BitIndex::new(10, 0));
+        assert_eq!(bx!(,10), BitIndex::new(1, 2));
+    }
+
+    #[test]
     fn display_test() {
         assert_eq!(format!("{}", BitIndex::new(5, 3)), "5B3b");
         assert_eq!(format!("{}", BitIndex::new(185, 7)), "185B7b");
@@ -738,6 +790,9 @@ mod bit_index_tests {
         assert_eq!(format!("{:+}", -BitIndex::new(185, 7)), "-185B7b");
 
         assert_eq!(format!("{:0>8}", BitIndex::new(5, 3)), "00005B3b");
+        assert_eq!(format!("{:0>08}", -BitIndex::new(5, 3)), "-0005B3b");
+        assert_eq!(format!("{:0>-08}", BitIndex::new(5, 3)), "00005B3b");
+        assert_eq!(format!("{:0>-08}", -BitIndex::new(5, 3)), "-0005B3b");
     }
 
     #[test]

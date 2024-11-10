@@ -56,7 +56,8 @@
 mod parse_helpers;
 use crate::bin_regex::parse_helpers::{EscapeIter, escape_vec, find_right_delimiter};
 
-use crate::bit_index::{bx, BitIndex, BitIndexable};
+use crate::bx;
+use crate::bit_index::{BitIndex, BitIndexable};
 use crate::bit_field::{BitField, FromBitField};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -255,7 +256,7 @@ enum RangeParseProgress<T: std::str::FromStr + Ord + std::hash::Hash + FromBitFi
 
 fn parse_uint_char_class<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug>(input: &Vec<char>, nbits: usize) -> Result<CharClass<T>, String>
 where <T as std::str::FromStr>::Err: std::fmt::Display {
-    let input_length = bx(nbits);
+    let input_length = bx!(,nbits);
     let mut input_iter = escape_vec(input).peekable();
     let mut options = std::collections::HashSet::<T>::new();
     let mut ranges = Vec::<(T, T)>::new();
@@ -1333,7 +1334,7 @@ mod tests {
         options.insert(0);
         options.insert(1);
         options.insert(23);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx(5)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx!(,5)}))));
 
         let input = "u6:^0,1,23".chars().collect();
         let res = parse_char_class(&input);
@@ -1341,7 +1342,7 @@ mod tests {
         options.insert(0);
         options.insert(1);
         options.insert(23);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![], input_length: bx(6)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![], input_length: bx!(,6)}))));
 
         let input = "u8:^0,50..64,1,23,100..128".chars().collect();
         let res = parse_char_class(&input);
@@ -1349,7 +1350,7 @@ mod tests {
         options.insert(0);
         options.insert(1);
         options.insert(23);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![(50,64), (100, 128)], input_length: bx(8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![(50,64), (100, 128)], input_length: bx!(,8)}))));
     }
 
     #[test]
@@ -1360,7 +1361,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx(8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx!(,8)}))));
 
         let input = "a8:^abc".chars().collect();
         let res = parse_char_class(&input);
@@ -1368,7 +1369,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![], input_length: bx(8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![], input_length: bx!(,8)}))));
 
         let input = "\\\\a\\bc".chars().collect();
         let res = parse_char_class(&input);
@@ -1377,7 +1378,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx(8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![], input_length: bx!(,8)}))));
 
         let input = "a8:abc0-9".chars().collect();
         let res = parse_char_class(&input);
@@ -1385,7 +1386,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![(48, 57)], input_length: bx(8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![(48, 57)], input_length: bx!(,8)}))));
 
         let input = "abc0-9\\--z".chars().collect();
         let res = parse_char_class(&input);
@@ -1393,7 +1394,7 @@ mod tests {
         options.insert(97);
         options.insert(98);
         options.insert(99);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![(48, 57), (45, 122)], input_length: bx(8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: false, options, ranges: vec![(48, 57), (45, 122)], input_length: bx!(,8)}))));
 
         let input = "a8:^0-9abc0-9d\\--zef".chars().collect();
         let res = parse_char_class(&input);
@@ -1404,7 +1405,7 @@ mod tests {
         options.insert(100);
         options.insert(101);
         options.insert(102);
-        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![(48, 57), (48, 57), (45, 122)], input_length: bx(8)}))));
+        assert_eq!(res, Ok(Token::CharacterClass(std::rc::Rc::new(CharClass::<u8>{inverted: true, options, ranges: vec![(48, 57), (48, 57), (45, 122)], input_length: bx!(,8)}))));
     }
 
     #[test]

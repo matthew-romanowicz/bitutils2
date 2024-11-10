@@ -35,6 +35,24 @@ pub enum IntFormat {
     BaseMinusTwo
 }
 
+pub enum BitPad {
+    Ones,
+    Zeros
+}
+
+impl BitPad {
+    pub fn bit_field(&self, length: BitIndex) -> BitField {
+        if length.is_negative() {
+            panic!("Negative length supplied to BitPad::bit_field: {}", length);
+        }
+        match self {
+            BitPad::Ones => BitField::ones(length),
+            BitPad::Zeros => BitField::zeros(length)
+        }
+    }
+}
+
+
 /// Represents a finite array of contiguous bits that supports several operations such as 
 /// indexing, slicing, shifting, etc.
 ///
@@ -88,7 +106,7 @@ pub enum IntFormat {
 /// assert_eq!(bf3, bf7); // bf3 and bf7 are equal in both length and contents
 ///
 /// // Returns a bitfield with 5 bytes of 0x00
-/// let bf8 = BitField::zeros(&BitIndex::new(5, 0));
+/// let bf8 = BitField::zeros(BitIndex::new(5, 0));
 ///
 /// 
 ///```
@@ -138,6 +156,8 @@ impl BitField {
     /// byte boundary, it is expected that the vector will have a final element that specifies
     /// the remaining bits.
     ///
+    /// Panics if `length` is negative
+    ///
     /// # Examples
     ///```rust
     /// use bitutils2::{BitField, BitIndex};
@@ -149,10 +169,13 @@ impl BitField {
     /// assert_eq!(bf, BitField::from_bin_str("1100 1100 0101 0101 0011 0000"));
     ///```
     pub fn new(v: Vec<u8>, length: BitIndex) -> BitField {
+        if length.is_negative() {
+            panic!("Negative length supplied to BitField::new: {}", length)
+        }
         BitField {v, length}
     }
 
-    /// Returns a [`BitField`](crate::BitField) structure with the contents of the vector 'v'.
+    /// Returns a [`BitField`](crate::BitField) structure with the contents of the vector `v`.
     ///
     /// The length of the bitfield is automatically calculated as the number of bits in the
     /// input vector. To create a [`BitField`](crate::BitField) that is not an integral 
@@ -172,28 +195,36 @@ impl BitField {
     }
 
     /// Creates and returns a [`BitField`](crate::BitField) of zeros (0x00) with the given length.
-    pub fn zeros(length: &BitIndex) -> BitField {
-        let mut v = Vec::<u8>::new();
-        let end = if length.bit() == 0 {length.byte()} else {length.byte() + 1};
-        v.resize(end, 0);
-        BitField {v, length: *length}
+    ///
+    /// Panics if `length` is negative
+    pub fn zeros(length: BitIndex) -> BitField {
+        if length.is_negative() {
+            panic!("Negative length supplied to BitField::zeros: {}", length)
+        }
+        let end = if length.is_byte_boundary() {length.byte()} else {length.byte() + 1};
+        BitField {v: vec![0; end], length}
     }
 
     /// Creates and returns a [`BitField`](crate::BitField) of ones (0xFF) with the given length.
-    pub fn ones(length: &BitIndex) -> BitField {
+    ///
+    /// Panics if `length` is negative
+    pub fn ones(length: BitIndex) -> BitField {
+        if length.is_negative() {
+            panic!("Negative length supplied to BitField::ones: {}", length)
+        }
         let mut v = Vec::<u8>::new();
-        if length.bit() == 0 {
+        if length.is_byte_boundary() {
             v.resize(length.byte(), 0xff);
         } else {
             v.resize(length.byte() + 1, 0xff);
             let last = (v[length.byte()] >> length.cbit()) << length.cbit();
             v[length.byte()] = last;
         }
-        BitField {v, length: *length}
+        BitField {v, length}
     }
 
     /// Parses a [`BitField`](crate::BitField) from a `str` of ones and zeros. Underscores and
-    /// spaces are allowed and are ignored. Any other character will cause a panic.
+    /// spaces are allowed and are ignored. Panics if any other character is encountered
     pub fn from_bin_str(s: &str) -> BitField {
         let mut length = BitIndex::new(0, 0);
         let mut byte = 0;
@@ -210,7 +241,7 @@ impl BitField {
                 ' ' | '_' => continue,
                 _ => panic!("Encountered unexpected character when parsing binary: '{}'", c)
             }
-            if length.bit() == 0 {
+            if length.is_byte_boundary() {
                 v.push(byte);
                 byte = 0;
             }
@@ -222,7 +253,8 @@ impl BitField {
     }
 
     /// Parses a [`BitField`](crate::BitField) from a `str` of hex characters (0-9, a-f, or A-F). 
-    /// Underscores and spaces are allowed and are ignored. Any other character will cause a panic.
+    /// Underscores and spaces are allowed and are ignored. Panics if any other character is
+    /// encountered
     pub fn from_hex_str(s: &str) -> BitField {
         let mut buffer = Vec::<u8>::new();
         let mut left = true;
@@ -277,7 +309,7 @@ impl BitField {
         return s[..(self.len().total_bits() as usize)].to_string()
     }
 
-    /// Returns the length of the [`BitField`](crate::BitField) as a [`BitIndex`](crate::BitIndex).
+    /// Returns the length of `self` as a [`BitIndex`](crate::BitIndex).
     pub fn len(&self) -> BitIndex {
         self.length
     }
@@ -295,18 +327,23 @@ impl BitField {
 
     /// Truncates the [`BitField`](crate::BitField) to `new_length` if `new_length` is shorter than 
     /// the current length. Does nothing otherwise.
-    pub fn truncate(&mut self, new_length: &BitIndex) {
-        if self.length <= *new_length {
+    ///
+    /// Panics if `new_length` is negative.
+    pub fn truncate(&mut self, new_length: BitIndex) {
+        if new_length.is_negative() {
+            panic!("Negative length supplied to BitField::truncate: {}", new_length)
+        }
+        if self.length <= new_length {
             return
         }
-        if new_length.bit() == 0 {
+        if new_length.is_byte_boundary() {
             self.v.truncate(new_length.byte());
         } else {
             self.v.truncate(new_length.byte() + 1);
             let last = (self.v[new_length.byte()] >> new_length.cbit()) << new_length.cbit();
             self.v[new_length.byte()] = last;
         }
-        self.length = *new_length;
+        self.length = new_length;
     }
 
     /// Concatenates the argument onto the end of the [`BitField`](crate::BitField), adjusting the 
@@ -314,23 +351,23 @@ impl BitField {
     pub fn extend(&mut self, other: &BitField) {
         if other.is_empty() {
             // Do nothing
-        } else if self.length.bit() == 0 {
+        } else if self.length.is_byte_boundary() {
             self.v.extend(other.v.clone());
         } else {
             let cbit = self.length.cbit();
             self.v[self.length.byte()] |= other.v[0] >> self.length.bit();
             let mut carry = other.v[0] << cbit;
-            let end = if other.length.bit() == 0 {other.length.byte()} else {other.length.byte() + 1};
+            let end = if other.length.is_byte_boundary() {other.length.byte()} else {other.length.byte() + 1};
             for i in 1..end {
                 self.v.push((other.v[i] >> self.length.bit()) | carry);
                 carry = other.v[i] << cbit;
             }
-            if (self.length.bit() + other.length.bit() > 8) || (other.length.bit() == 0) {
+            if (self.length.bit() + other.length.bit() > 8) || other.length.is_byte_boundary() {
                 self.v.push(carry);
             }
         
         }
-        self.length = self.length + other.length;
+        self.length += other.length;
     }
 
     /// Repeats a [`BitField`](crate::BitField) `n` times. If `n` is `0`, the bitfield is cleared and if `n` is 1, the bitfield
@@ -360,30 +397,26 @@ impl BitField {
     /// use bitutils2::{BitField, BitIndex};
     ///
     /// let mut bf = BitField::from_bin_str("0101 1100 11");
-    /// bf.repeat_until(&BitIndex::new(5, 4));
+    /// bf.repeat_until(BitIndex::new(5, 4));
     /// assert_eq!(bf, BitField::from_bin_str("0101 1100 1101 0111 0011 0101 1100 1101 0111 0011 0101"));
     ///
     /// // If the new length is less than the current length, then self is truncated.
-    /// bf.repeat_until(&BitIndex::new(0, 6));
+    /// bf.repeat_until(BitIndex::new(0, 6));
     /// assert_eq!(bf, BitField::from_bin_str("0101 11"));
     ///```
-    pub fn repeat_until(&mut self, new_length: &BitIndex) {
+    pub fn repeat_until(&mut self, new_length: BitIndex) {
         if new_length.is_negative() {
-            panic!("Negative length provided for repeat_until: {}", new_length);
+            panic!("Negative length supplied to BitField::repeat_until: {}", new_length);
         }
         if self.is_empty() {
-            panic!("Empty BitField provided for repeat_until")
+            panic!("BitField::repeat_until called on empty BitField")
         }
-        let n = *new_length / &self.length;
+        let n = new_length / &self.length;
         
         self.repeat(n as usize + 1);
         self.truncate(new_length);
         
     }
-
-    // fn offset_xor(&mut self, rhs: BitField, offset: BitIndex) {
-
-    // }
 
     /// Finds the index of the first `1` bit in `self`. Returns None if
     /// there are no zeros in `self` or if `self` is empty.
@@ -455,123 +488,162 @@ impl BitField {
         })
     }
 
+    /// Inserts the bits specified in `new` to the right of `self`, shifting the
+    /// existing contents of `self` left to accommodate the new data without changing
+    /// `self`'s length. If `new` is longer than `self`, then `self` will be overwritten
+    /// with the rightmost data in `new`.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_bin_str("0101 1100 1100 0011 1010");
+    ///
+    /// // When new is shorter than self, self's data is left shifted by new's length
+    /// bf.shove_left(&BitField::from_bin_str("1101 00"));
+    /// assert_eq!(bf, BitField::from_bin_str("0011 0000 1110 1011 0100"));
+    ///
+    /// // When new is the same length as self, self is overwritten with the data in new
+    /// bf.shove_left(&BitField::from_bin_str("0101 1010 1101 0011 1100"));
+    /// assert_eq!(bf, BitField::from_bin_str("0101 1010 1101 0011 1100"));
+    ///
+    /// // When new is longer than self, self is overwritten with the rightmost data in new
+    /// bf.shove_left(&BitField::from_bin_str("1100 0011 1001 0110 0101 1100"));
+    /// assert_eq!(bf, BitField::from_bin_str("0011 1001 0110 0101 1100"));
+    ///```
+    pub fn shove_left(&mut self, new: &BitField) {
+        if new.len() < self.len() {
+            *self <<= new.len().total_bits() as usize;
+            self.truncate(self.len() - new.len());
+            self.extend(new);
+        } else if new.len() > self.len() {
+            *self = new.bit_slice(&(new.len() - self.len()), &new.len());
+        } else {
+            *self = new.clone();
+        }
+        
+    }
+
+    /// Returns a slice of `self` that may extend beyond the length of `self`. The returned
+    /// slice will be padded according to the provided `pad` parameter. If both `start` and
+    /// `end` are less than `self`'s length, this is equivalant to 
+    /// [`bit_slice`](crate::BitField::bit_slice). If both `start` and `end` are greater than
+    /// `self`'s length, then the return value is entirely comprised of padding.
+    ///
+    /// Panics if `end` is less than `start` or if either is negative.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex, BitPad};
+    ///
+    /// let bf = BitField::from_bin_str("0101 1100 1100 0011 1010");
+    ///
+    /// // When the slice is contained within the bitfield, no padding is done.
+    /// let slice_zeros = bf.slice_with_rpad(&BitIndex::new(0, 4), &BitIndex::new(2, 2), BitPad::Zeros);
+    /// let slice_ones  = bf.slice_with_rpad(&BitIndex::new(0, 4), &BitIndex::new(2, 2), BitPad::Ones);
+    /// assert_eq!(slice_zeros, BitField::from_bin_str("1100 1100 0011 10"));
+    /// assert_eq!(slice_ones , BitField::from_bin_str("1100 1100 0011 10"));
+    ///
+    /// // When the slice is partially contained within the bitfield, then the remaining
+    /// // portion will be filled in with padding.
+    /// let slice_zeros = bf.slice_with_rpad(&BitIndex::new(1, 2), &BitIndex::new(3, 4), BitPad::Zeros);
+    /// let slice_ones  = bf.slice_with_rpad(&BitIndex::new(1, 2), &BitIndex::new(3, 4), BitPad::Ones);
+    /// assert_eq!(slice_zeros, BitField::from_bin_str("0000 1110 1000 0000 00"));
+    /// assert_eq!(slice_ones , BitField::from_bin_str("0000 1110 1011 1111 11"));
+    ///
+    /// // When the slice is fully beyond the bitfield, then the entire slice will be filled in with padding.
+    /// let slice_zeros = bf.slice_with_rpad(&BitIndex::new(2, 4), &BitIndex::new(3, 6), BitPad::Zeros);
+    /// let slice_ones  = bf.slice_with_rpad(&BitIndex::new(2, 4), &BitIndex::new(3, 6), BitPad::Ones);
+    /// assert_eq!(slice_zeros, BitField::from_bin_str("0000 0000 00"));
+    /// assert_eq!(slice_ones , BitField::from_bin_str("1111 1111 11"));
+    ///```
+    pub fn slice_with_rpad(&self, start: &BitIndex, end: &BitIndex, pad: BitPad) -> BitField {
+        if *end > self.len() {
+            if *start >= self.len() {
+                pad.bit_field(end - start)
+            } else {
+                let mut slice = self.bit_slice(start, &self.len());
+                slice.extend(&pad.bit_field(end - &self.len()));
+                slice
+            }
+        } else {
+            self.bit_slice(start, end)
+        }
+    }
+
+    pub fn slice_with_pad(&self, start: &BitIndex, end: &BitIndex, pad: BitPad) -> BitField {
+        if start.is_negative() {
+            let mut slice = pad.bit_field(start.abs());
+            slice.extend(&self.slice_with_rpad(&BitIndex::zero(), end, pad));
+            slice
+        } else {
+            self.slice_with_rpad(&BitIndex::zero(), end, pad)
+        }
+    }
+
     /// Calculates the CRC of `self` using the provided initial value and 
     /// polynomial assuming big-endian bit order. Note that the polynomial paramter
     /// must not include the leading 1. 
     ///
-    /// Panics if the initial and polynomial parameters are different lengths.
+    /// Panics if the `initial` and `polynomial` parameters are different lengths.
     pub fn crc_be(&self, initial: BitField, polynomial: BitField) -> BitField {
         let n = polynomial.len();
         if initial.len() != n {
             panic!("Length of 'initial' must be equal to length of 'polynomial'")
         }
         let mut current = BitIndex::zero();
-        let mut slice: BitField;
-
-        if self.len() < n {
-            slice = self.clone();
-            slice.extend(&BitField::zeros(&(n - self.len())));
-        } else {
-            slice = self.bit_slice(&current, &(current + n));
-        }
+        let mut slice = self.slice_with_rpad(&BitIndex::zero(), &n, BitPad::Zeros);
 
         slice ^= &initial;
 
         // let mut next = None;
         loop {
-            
-            println!("new current: {}", current);
-            println!("{}v", " ".repeat(current.total_bits() as usize));
-            println!("{}", self.to_bin_str());
-            println!("{}{}", " ".repeat(current.total_bits() as usize), slice.to_bin_str());
-
-
             loop {
-
-                println!("\tcurrent: {}", current);
 
                 // Look for the next non-zero bit
                 match slice.find_first_one() {
                     None => {
-                        println!("\tNext is none in slice");
-                        if current + n > self.len() {
-                            println!("{}v", " ".repeat(current.total_bits() as usize));
-                            println!("{}", self.to_bin_str());
-                            println!("{}{}", " ".repeat(current.total_bits() as usize), slice.to_bin_str());
-                            
-                            slice <<= (current + n - self.len()).total_bits() as usize;
-                            slice.truncate(&(self.len() - current));
-                            slice.extend(&BitField::zeros(&(current + n - self.len())));
+                        let slice_end = current + n;
+                        if slice_end > self.len() {
+
+                            slice.shove_left(&BitField::zeros(slice_end - self.len()));
                             return slice
                         } else {
-                            current = current + n;
+                            current = slice_end;
                         }
                         break;
                     },
                     Some(offset) => {
                         let offset = offset + 1;
-                        println!("\toffset: {}", offset);
                         if current + offset > self.len() {
-                            slice <<= (self.len() - current).total_bits() as usize;
-                            slice.truncate(&(current + n - self.len()));
-                            slice.extend(&BitField::zeros(&(self.len() - current)));
+                            slice.shove_left(&BitField::zeros(self.len() - current));
                             return slice
-                            // current = self.len();
-                            // break;
                         }
-                        slice <<= offset.total_bits() as usize;
-                        slice.truncate(&(n - offset));
-                        if current + n > self.len() {
-                            slice.extend(&BitField::zeros(&offset));
-                        } else if current + offset + n > self.len() {
-                            println!("Supplementing slice with zeros: {}, {}", current + n, self.len());
-                            slice.extend(&self.bit_slice(&(current + n), &self.len()));
-                            slice.extend(&BitField::zeros(&(current + offset + n - self.len())));
-                        } else {
-                            println!("Not supplementing slice with zeros");
-                            slice.extend(&self.bit_slice(&(current + n), &(current + offset + n)));
-                        }
+                        let slice_end = current + n;
+
+                        slice.shove_left(&self.slice_with_rpad(&slice_end, &(slice_end + offset), BitPad::Zeros));
                         
                         slice ^= &polynomial;
-                        current = current + offset;
-                        println!("\t{}v", " ".repeat(current.total_bits() as usize));
-                        println!("\t{}", self.to_bin_str());
-                        println!("\t{}{}", " ".repeat(current.total_bits() as usize), slice.to_bin_str());
+                        current += offset;
                     }
                 }
             }
 
-            println!("current: {}", current);
-            println!("{}v", " ".repeat(current.total_bits() as usize));
-            println!("{}", self.to_bin_str());
-
             // Find the next non-zero bit if one exists
             match self.find_next_one(current) {
                 None => {
-                    println!("No next");
-                    if current + n > self.len() {
-                        println!("{}v", " ".repeat(current.total_bits() as usize));
-                        println!("{}", self.to_bin_str());
-                        println!("{}{}", " ".repeat(current.total_bits() as usize), slice.to_bin_str());
-                        slice <<= (current + n - self.len()).total_bits() as usize;
-                        slice.truncate(&(self.len() - current));
-                        slice.extend(&BitField::zeros(&(current + n - self.len())));
+                    let slice_end = current + n;
+                    if slice_end > self.len() {
+                        slice.shove_left(&BitField::zeros(slice_end - self.len()));
                         return slice
                     } else {
-                        return BitField::zeros(&n)
+                        return BitField::zeros(n)
                     }
                 },
                 Some(next) => {
-                    println!("next: {}", next);
                     current = next + 1;
-                    if current + n > self.len() {
-                        slice = self.bit_slice(&current, &self.len());
-                        slice.extend(&BitField::zeros(&(current + n - self.len())));
-                        println!("Case 1: {:?}", slice);
-                    } else {
-                        slice = self.bit_slice(&current, &(current + n));
-                        println!("Case 2: {:?}", slice);
-                    }
+                    let slice_end = current + n;
+                    slice = self.slice_with_rpad(&current, &slice_end, BitPad::Zeros);
                     slice ^= &polynomial;
                 }
             }
@@ -695,7 +767,7 @@ impl BitField {
     }
 
     pub fn extract_u8(&self, start: BitIndex) -> u8 {
-        if start.bit() == 0 {
+        if start.is_byte_boundary() {
             self.v[start.byte()]
         } else {
             (self.v[start.byte()] << start.bit()) | (self.v[start.byte() + 1] >> start.cbit())
@@ -711,7 +783,7 @@ impl BitField {
         }
         let start = start.rem_euclid(&self.length);
         let i = start.byte();
-        if start.bit() == 0 {
+        if start.is_byte_boundary() {
             if i == self.length.byte() {
                 // If the 8-bit span starts on the partial byte at the end of the field, we need
                 // to grab some bits from the start.
@@ -721,7 +793,7 @@ impl BitField {
             }
         } else {
             let res = self.v[start.byte()] << start.bit();
-            let last_byte = if self.length.bit() == 0 {
+            let last_byte = if self.length.is_byte_boundary() {
                 self.length.byte() - 1
             } else {
                 self.length.byte()
@@ -729,7 +801,7 @@ impl BitField {
             if i == last_byte {
                 // 0101 0011 1010 0011 010
                 // ---- --              ^- 
-                if self.length.bit() == 0 {
+                if self.length.is_byte_boundary() {
                     res | (self.v[0] >> (8 - start.bit()))
                 } else {
                     res | (self.v[0] >> (self.length.bit() - start.bit()))
@@ -954,7 +1026,7 @@ impl BitField {
             //     // println!("{}, {}", i, c);
             // } 
             println!("b = {}", b);
-            if start.bit() == 0 {
+            if start.is_byte_boundary() {
                 v[i] = b;
             } else {
                 println!("b >> {} = {}", start.cbit(), b >> start.cbit());
@@ -1112,7 +1184,7 @@ impl BitField {
     pub fn pad_unsigned_be(&mut self, new_length: BitIndex) {
         if self.length < new_length {
             let delta = new_length - self.length;
-            let pad = BitField::zeros(&delta);
+            let pad = BitField::zeros(delta);
             let original = std::mem::replace(self, pad);
             self.extend(&original);
         }
@@ -1146,7 +1218,7 @@ impl BitField {
         if self.length < new_length {
 
             // Pad the left side with zeros to he new length
-            let pad = BitField::zeros(&(new_length - self.length));
+            let pad = BitField::zeros(new_length - self.length);
             let old_length = self.length.clone();
             self.extend(&pad);
 
@@ -1206,9 +1278,9 @@ impl BitField {
         if self.length < new_length {
             let delta = new_length - self.length;
             let pad = if self.bit_at(&BitIndex::zero()) == 0 {
-                BitField::zeros(&delta)
+                BitField::zeros(delta)
             } else {
-                BitField::ones(&delta)
+                BitField::ones(delta)
             };
             let original = std::mem::replace(self, pad);
             self.extend(&original);
@@ -1361,7 +1433,7 @@ impl BitField {
             self.v[0] &= 0x7f;
 
             // Left pad to the new length with zeros
-            let pad = BitField::zeros(&delta);
+            let pad = BitField::zeros(delta);
             let original = std::mem::replace(self, pad);
             self.extend(&original);
 
@@ -1443,7 +1515,7 @@ impl std::cmp::PartialEq for BitField {
     fn eq(&self, other: &Self) -> bool {
         if self.len() != other.len() {
             false
-        } else if self.len().bit() == 0 {
+        } else if self.len().is_byte_boundary() {
             self.v == other.v
         } else {
             let n = self.length.byte();
@@ -1843,16 +1915,16 @@ mod bit_field_tests {
 
     #[test]
     fn zeros() {
-        assert_eq!(BitField::zeros(&BitIndex::new(2, 4)), BitField::from_bin_str("0000 0000 0000 0000 0000"));
-        assert_eq!(BitField::zeros(&BitIndex::new(3, 0)), BitField::from_bin_str("0000 0000 0000 0000 0000 0000"));
-        assert_eq!(BitField::zeros(&BitIndex::new(0, 0)), BitField::from_bin_str(""));
+        assert_eq!(BitField::zeros(BitIndex::new(2, 4)), BitField::from_bin_str("0000 0000 0000 0000 0000"));
+        assert_eq!(BitField::zeros(BitIndex::new(3, 0)), BitField::from_bin_str("0000 0000 0000 0000 0000 0000"));
+        assert_eq!(BitField::zeros(BitIndex::new(0, 0)), BitField::from_bin_str(""));
     }
 
     #[test]
     fn ones() {
-        assert_eq!(BitField::ones(&BitIndex::new(2, 4)), BitField::from_bin_str("1111 1111 1111 1111 1111"));
-        assert_eq!(BitField::ones(&BitIndex::new(3, 0)), BitField::from_bin_str("1111 1111 1111 1111 1111 1111"));
-        assert_eq!(BitField::ones(&BitIndex::new(0, 0)), BitField::from_bin_str(""));
+        assert_eq!(BitField::ones(BitIndex::new(2, 4)), BitField::from_bin_str("1111 1111 1111 1111 1111"));
+        assert_eq!(BitField::ones(BitIndex::new(3, 0)), BitField::from_bin_str("1111 1111 1111 1111 1111 1111"));
+        assert_eq!(BitField::ones(BitIndex::new(0, 0)), BitField::from_bin_str(""));
     }
 
     #[test]
@@ -1892,19 +1964,19 @@ mod bit_field_tests {
     #[test]
     fn truncate() {
         let mut bf = BitField::from_bin_str("0101 1111 0000 1010 1100 0011");
-        bf.truncate(&BitIndex::new(2, 2));
+        bf.truncate(BitIndex::new(2, 2));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1010 11"));
-        bf.truncate(&BitIndex::new(2, 0));
+        bf.truncate(BitIndex::new(2, 0));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1010"));
-        bf.truncate(&BitIndex::new(1, 6));
+        bf.truncate(BitIndex::new(1, 6));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 10"));
-        bf.truncate(&BitIndex::new(1, 6));
+        bf.truncate(BitIndex::new(1, 6));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 10"));
-        bf.truncate(&BitIndex::new(1, 7));
+        bf.truncate(BitIndex::new(1, 7));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 10"));
-        bf.truncate(&BitIndex::new(1, 2));
+        bf.truncate(BitIndex::new(1, 2));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 00"));
-        bf.truncate(&BitIndex::new(0, 2));
+        bf.truncate(BitIndex::new(0, 2));
         assert_eq!(bf, BitField::from_bin_str("01"));
     }
 
@@ -2248,9 +2320,9 @@ mod bit_field_tests {
         let exp: u8 = 128;
 
         let bf = BitField::from_vec(frac.to_be_bytes().to_vec());
-        let mut bf2 = BitField::zeros(&BitIndex::new(0, 1));
+        let mut bf2 = BitField::zeros(BitIndex::new(0, 1));
         bf2.extend(&BitField::from_vec(vec![exp]));
-        bf2.extend(&BitField::zeros(&BitIndex::bits(23)));
+        bf2.extend(&BitField::zeros(BitIndex::bits(23)));
         bf2 = &bf2 | &bf;
         let result = f32::from_be_bytes(bf2.clone().into_slice().unwrap());
         assert_eq!(result, std::f32::consts::PI);
