@@ -45,7 +45,9 @@
 //! [a8:xyzA-Z3-9]    => 8-bit ASCII
 //! [u8:1,2,3,4..10]  => 8-bit unsigned integer
 //! [i8:1,2,3,4..10]  => 8-bit two's compliment integer
-//! [i8:1,2,3,4..10]  => 8-bit one's compliment integer
+//! [o8:1,2,3,4..10]  => 8-bit one's compliment integer
+//! [s8:1,2,3,4..10]  => 8-bit sign-magnitude integer
+//! [n8:1,2,3,4..10]  => 8-bit negabinary integer
 //!</pre>
 //!
 //! # Compositions
@@ -88,7 +90,9 @@ enum GroupType {
 enum DynamicCharacterClass {
     UInt(CharClass<UInt>),
     TwosCompInt(CharClass<TwosCompInt>),
-    OnesCompInt(CharClass<OnesCompInt>)
+    OnesCompInt(CharClass<OnesCompInt>),
+    SignMagInt(CharClass<SignMagInt>),
+    NegaInt(CharClass<NegaInt>)
 }
 
 impl DynamicCharacterClass {
@@ -96,7 +100,9 @@ impl DynamicCharacterClass {
         match self {
             DynamicCharacterClass::UInt(cls) => cls.input_length(),
             DynamicCharacterClass::TwosCompInt(cls) => cls.input_length(),
-            DynamicCharacterClass::OnesCompInt(cls) => cls.input_length()
+            DynamicCharacterClass::OnesCompInt(cls) => cls.input_length(),
+            DynamicCharacterClass::SignMagInt(cls) => cls.input_length(),
+            DynamicCharacterClass::NegaInt(cls) => cls.input_length()
         }
     }
 
@@ -104,12 +110,12 @@ impl DynamicCharacterClass {
         match self {
             DynamicCharacterClass::UInt(cls) => cls.matches(input),
             DynamicCharacterClass::TwosCompInt(cls) => cls.matches(input),
-            DynamicCharacterClass::OnesCompInt(cls) => cls.matches(input)
+            DynamicCharacterClass::OnesCompInt(cls) => cls.matches(input),
+            DynamicCharacterClass::SignMagInt(cls) => cls.matches(input),
+            DynamicCharacterClass::NegaInt(cls) => cls.matches(input)
         }
     }
 }
-
-trait MyTrait: std::str::FromStr + std::cmp::Ord + std::hash::Hash + FromBitField + std::fmt::Debug {}
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
@@ -163,7 +169,7 @@ enum TextEncoding {
 // #[derive(PartialEq, Eq, Debug)]
 // struct U8CharClass {
 //     inverted: bool,
-//     options: std::collections::HashSet<UInt>,
+//     options: HashSet<UInt>,
 //     ranges: Vec<(u8, u8)>
 // }
 
@@ -292,6 +298,7 @@ impl FromBitField for OnesCompInt {
         if n > 128 {
             bf.truncate(BitIndex::bits(128));
         } else if n < 128 {
+            // Two's compliment padding and one's compliment padding are the same
             bf.pad_twos_compliment_be(BitIndex::bits(128));
         }
 
@@ -309,11 +316,12 @@ impl FromBitField for OnesCompInt {
         if n > 128 {
             bf.truncate(BitIndex::bits(128));
         } else if n < 128 {
+            // Two's compliment padding and one's compliment padding are the same
             bf.pad_twos_compliment_le(BitIndex::bits(128));
         }
 
         let neg = bf.convert_unsigned_le(IntFormat::OnesCompliment);
-        let mut i = u128::from_be_bytes(bf.into_array().unwrap()) as i128;
+        let mut i = u128::from_le_bytes(bf.into_array().unwrap()) as i128;
         if neg {
             i *= -1
         }
@@ -335,6 +343,114 @@ impl std::cmp::PartialOrd for OnesCompInt {
     }
 }
 
+#[derive(PartialEq, Eq, Ord, std::hash::Hash, Clone, Debug)]
+struct SignMagInt(i128);
+
+impl FromBitField for SignMagInt {
+    fn from_bf_be(bf: &BitField) -> SignMagInt {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            bf.pad_sign_magnitude_be(BitIndex::bits(128));
+        }
+
+        let neg = bf.convert_unsigned_be(IntFormat::SignMagnitude);
+        let mut i = u128::from_be_bytes(bf.into_array().unwrap()) as i128;
+        if neg {
+            i *= -1
+        }
+        SignMagInt(i)
+    }
+
+    fn from_bf_le(bf: &BitField) -> SignMagInt {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            bf.pad_sign_magnitude_le(BitIndex::bits(128));
+        }
+
+        let neg = bf.convert_unsigned_le(IntFormat::SignMagnitude);
+        let mut i = u128::from_le_bytes(bf.into_array().unwrap()) as i128;
+        if neg {
+            i *= -1
+        }
+        SignMagInt(i)
+    }
+}
+
+impl std::str::FromStr for SignMagInt {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(SignMagInt(i128::from_str(s)?))
+    }
+}
+
+impl std::cmp::PartialOrd for SignMagInt {
+    fn partial_cmp(&self, other: &SignMagInt) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+#[derive(PartialEq, Eq, Ord, std::hash::Hash, Clone, Debug)]
+struct NegaInt(i128);
+
+impl FromBitField for NegaInt {
+    fn from_bf_be(bf: &BitField) -> NegaInt {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            // Unsigned padding and negabinary padding are the same
+            bf.pad_unsigned_be(BitIndex::bits(128));
+        }
+
+        let neg = bf.convert_unsigned_be(IntFormat::BaseMinusTwo);
+        let mut i = u128::from_be_bytes(bf.into_array().unwrap()) as i128;
+        if neg {
+            i *= -1
+        }
+        NegaInt(i)
+    }
+
+    fn from_bf_le(bf: &BitField) -> NegaInt {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 128 {
+            bf.truncate(BitIndex::bits(128));
+        } else if n < 128 {
+            // Unsigned padding and negabinary padding are the same
+            bf.pad_unsigned_le(BitIndex::bits(128));
+        }
+
+        let neg = bf.convert_unsigned_le(IntFormat::BaseMinusTwo);
+        let mut i = u128::from_le_bytes(bf.into_array().unwrap()) as i128;
+        if neg {
+            i *= -1
+        }
+        NegaInt(i)
+    }
+}
+
+impl std::str::FromStr for NegaInt {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(NegaInt(i128::from_str(s)?))
+    }
+}
+
+impl std::cmp::PartialOrd for NegaInt {
+    fn partial_cmp(&self, other: &NegaInt) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
 #[derive(PartialEq, Eq, Debug)]
 enum Endian {
     Big,
@@ -345,7 +461,7 @@ enum Endian {
 struct CharClass<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField> {
     inverted: bool,
     endian: Endian,
-    options: std::collections::HashSet<T>,
+    options: HashSet<T>,
     ranges: Vec<(T, T)>,
     input_length: BitIndex
 }
@@ -375,10 +491,10 @@ impl<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Deb
 
 fn parse_ascii_char_class(input: &Vec<char>, endian: Endian) -> Result<CharClass<UInt>, String> {
     let mut input_iter = escape_vec(input).peekable();
-    let mut options = std::collections::HashSet::<UInt>::new();
+    let mut options = HashSet::<UInt>::new();
     let mut ranges = Vec::<(UInt, UInt)>::new();
     let mut prev_char: Option<UInt> = None;
-    let mut escaped = false;
+    // let mut escaped = false;
     let mut range_started = false;
 
     let inverted = if input_iter.peek() == Some(&('^', false)) {
@@ -392,8 +508,8 @@ fn parse_ascii_char_class(input: &Vec<char>, endian: Endian) -> Result<CharClass
         match c {
             '-' if !escaped => {
                 match prev_char {
-                    Some(ref p) if range_started => return Err("Unexpected '-' encountered after '-'".to_string()),
-                    Some(ref p) => {
+                    Some(_) if range_started => return Err("Unexpected '-' encountered after '-'".to_string()),
+                    Some(_) => {
                         range_started = true;
                         continue
                     },
@@ -441,7 +557,7 @@ fn parse_int_char_class<T: std::str::FromStr + Ord + std::hash::Hash + FromBitFi
 where <T as std::str::FromStr>::Err: std::fmt::Display {
     let input_length = bx!(,nbits);
     let mut input_iter = escape_vec(input).peekable();
-    let mut options = std::collections::HashSet::<T>::new();
+    let mut options = HashSet::<T>::new();
     let mut ranges = Vec::<(T, T)>::new();
     let mut prev_word = Vec::<char>::new();
     let mut range_prog = RangeParseProgress::<T>::NotStarted;
@@ -495,14 +611,14 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
                         }
                         range_prog = RangeParseProgress::TwoDot(n0);
                     },
-                    RangeParseProgress::TwoDot(n0) => {
+                    RangeParseProgress::TwoDot(_) => {
                         return Err(format!("Encountered unexpected character '{}' while parsing range", c))
                     }
                 }
             },
             '-' | '+' | '0'..='9' => {
                 match range_prog {
-                    RangeParseProgress::OneDot(n0) => {
+                    RangeParseProgress::OneDot(_) => {
                         return Err(format!("Encountered unexpected character '{}' while parsing range", c))
                     },
                     _ => ()
@@ -592,6 +708,24 @@ fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
                                 match cls_result {
                                     Ok(cls) => {
                                         return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::OnesCompInt(cls))))
+                                    },
+                                    Err(msg) => return Err(msg)
+                                }
+                            },
+                            's' => {
+                                let cls_result = parse_int_char_class::<SignMagInt>(&input[i+1..].to_vec(), n, endian);
+                                match cls_result {
+                                    Ok(cls) => {
+                                        return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::SignMagInt(cls))))
+                                    },
+                                    Err(msg) => return Err(msg)
+                                }
+                            },
+                            'n' => {
+                                let cls_result = parse_int_char_class::<NegaInt>(&input[i+1..].to_vec(), n, endian);
+                                match cls_result {
+                                    Ok(cls) => {
+                                        return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::NegaInt(cls))))
                                     },
                                     Err(msg) => return Err(msg)
                                 }
@@ -789,7 +923,7 @@ fn get_direct_transitions(fsm: &Vec<Vec<(usize, StateTransition, Vec<StateFlag>)
 }
 
 fn remove_dead_states(fsm: &mut Vec<Vec<(usize, StateTransition, Vec<StateFlag>)>>) {
-    let mut valid_states = std::collections::HashSet::new();
+    let mut valid_states = HashSet::new();
     valid_states.insert(0);
     for transitions in fsm.iter() {
         for (dest, _t, _flags) in transitions {
@@ -811,7 +945,7 @@ fn remove_dead_states(fsm: &mut Vec<Vec<(usize, StateTransition, Vec<StateFlag>)
     }
 
     for transitions in fsm.iter_mut() {
-        for mut transition in transitions {
+        for transition in transitions {
             transition.0 = normalize_index(&removed, transition.0);
         }
     }
@@ -1690,7 +1824,7 @@ mod tests {
     fn ascii_char_class() {
         let input = "abc".chars().collect();
         let res = parse_char_class(&input);
-        let mut options = std::collections::HashSet::new();
+        let mut options = HashSet::new();
         options.insert(UInt(97));
         options.insert(UInt(98));
         options.insert(UInt(99));
@@ -1705,7 +1839,7 @@ mod tests {
 
         let input = "a8:^abc".chars().collect();
         let res = parse_char_class(&input);
-        let mut options = std::collections::HashSet::new();
+        let mut options = HashSet::new();
         options.insert(UInt(97));
         options.insert(UInt(98));
         options.insert(UInt(99));
@@ -1720,7 +1854,7 @@ mod tests {
 
         let input = "\\\\a\\bc".chars().collect();
         let res = parse_char_class(&input);
-        let mut options = std::collections::HashSet::new();
+        let mut options = HashSet::new();
         options.insert(UInt(92));
         options.insert(UInt(97));
         options.insert(UInt(98));
@@ -1736,7 +1870,7 @@ mod tests {
 
         let input = "a8:abc0-9".chars().collect();
         let res = parse_char_class(&input);
-        let mut options = std::collections::HashSet::new();
+        let mut options = HashSet::new();
         options.insert(UInt(97));
         options.insert(UInt(98));
         options.insert(UInt(99));
@@ -1751,7 +1885,7 @@ mod tests {
 
         let input = "abc0-9\\--z".chars().collect();
         let res = parse_char_class(&input);
-        let mut options = std::collections::HashSet::new();
+        let mut options = HashSet::new();
         options.insert(UInt(97));
         options.insert(UInt(98));
         options.insert(UInt(99));
@@ -1766,7 +1900,7 @@ mod tests {
 
         let input = "a8:^0-9abc0-9d\\--zef".chars().collect();
         let res = parse_char_class(&input);
-        let mut options = std::collections::HashSet::new();
+        let mut options = HashSet::new();
         options.insert(UInt(97));
         options.insert(UInt(98));
         options.insert(UInt(99));
