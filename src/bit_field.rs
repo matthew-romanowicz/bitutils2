@@ -540,7 +540,7 @@ impl BitField {
     ///```
     pub fn shove_left(&mut self, new: &BitField) {
         if new.len() < self.len() {
-            *self <<= new.len().total_bits() as usize;
+            *self <<= new.len();
             self.truncate(self.len() - new.len());
             self.extend(new);
         } else if new.len() > self.len() {
@@ -2070,32 +2070,9 @@ impl std::ops::Shl<usize> for BitField {
             return self;
         }
 
-        // let crhs = 8 - rhs;
-        // let max_bit = self.max_index().bit() as usize;
-
-        // let mut res = Vec::<u8>::new();
-        // for i in 0..(self.max_index().byte() - 1) {
-        //     res.push((self.v[i] << rhs) | (self.v[i + 1] >> crhs));
-        // }
-
-        // let i = self.max_index().byte() - 1;
-        // if rhs <= max_bit {
-        //     res.push((self.v[i] << rhs) | (self.v[i + 1] >> crhs));
-        //     if max_bit != 0 {
-        //         res.push((self.v[i + 1] << rhs) | (((self.v[0] >> crhs) << crhs) >> (max_bit - rhs)));
-        //     }
-        // } else if max_bit != 0 {
-        //     res.push((self.v[i] << rhs) | (self.v[i + 1] >> crhs) | (self.v[0] >> (crhs + max_bit)));
-        //     res.push((self.v[0] >> crhs) << (8 - max_bit));
-        // } else {
-        //     res.push((self.v[i] << rhs) | (self.v[0] >> crhs));
-        // }
-
         let shift = BitIndex::bits(rhs);
         
-
         let mut v = Vec::<u8>::with_capacity(self.v.len());
-
 
         for i in 0..self.v.len() {
             let bi = BitIndex::bytes(i) + shift;
@@ -2127,6 +2104,62 @@ impl std::ops::ShlAssign<usize> for BitField  {
     /// assert_eq!(bf, BitField::from_bin_str("0011 1100 1100 00"));
     ///```
     fn shl_assign(&mut self, rhs: usize){
+        *self = std::mem::take(self) << rhs;
+    }
+}
+
+impl std::ops::Shl<BitIndex> for BitField {
+    type Output = Self;
+
+    /// Returns a [`BitField`](crate::BitField) with the bits shifted left by the magnitude of
+    /// `rhs` if `rhs` is positive or shifted right if `rhs` is negative. Bits that are dropped 
+    /// off one side are wrapped around to fill the other side.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex, bx};
+    ///
+    /// let bf = BitField::from_bin_str("1100 0000 1111 00");
+    /// let bf = bf << bx!(,2);
+    /// assert_eq!(bf, BitField::from_bin_str("0000 0011 1100 11"));
+    /// let bf = bf << bx!(1 ,4);
+    /// assert_eq!(bf, BitField::from_bin_str("1100 0000 1111 00"));
+    ///
+    /// // Negative bit indexes will result in right shifts
+    /// let bf = bf << -bx!(1 ,4);
+    /// assert_eq!(bf, BitField::from_bin_str("0000 0011 1100 11"));
+    ///```
+    fn shl(self, rhs: BitIndex) -> Self::Output {
+        let n = rhs.total_bits();
+        if n < 0 {
+            self >> (n.abs() as usize)
+        } else {
+            self << (n as usize)
+        }
+    }
+}
+
+impl std::ops::ShlAssign<BitIndex> for BitField  {
+
+    /// Transforms `self` by shifting all bits to the left by the magnitude of
+    /// `rhs` if `rhs` is positive or shifted right if `rhs` is negative. Bits that are dropped 
+    /// off one side are wrapped around to fill the other side.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex, bx};
+    ///
+    /// let mut bf = BitField::from_bin_str("1100 0000 1111 00");
+    /// bf <<= bx!(,2);
+    /// assert_eq!(bf, BitField::from_bin_str("0000 0011 1100 11"));
+    /// bf <<= bx!(1, 4);
+    /// assert_eq!(bf, BitField::from_bin_str("1100 0000 1111 00"));
+    ///
+    /// // Negative bit indexes will result in right shifts
+    /// bf <<= -bx!(1, 4);
+    /// assert_eq!(bf, BitField::from_bin_str("0000 0011 1100 11"));
+    ///```
+    fn shl_assign(&mut self, rhs: BitIndex){
         *self = std::mem::take(self) << rhs;
     }
 }
@@ -2190,6 +2223,62 @@ impl std::ops::ShrAssign<usize> for BitField  {
     /// assert_eq!(bf, BitField::from_bin_str("1111 0011 0000 00"));
     ///```
     fn shr_assign(&mut self, rhs: usize){
+        *self = std::mem::take(self) >> rhs;
+    }
+}
+
+impl std::ops::Shr<BitIndex> for BitField {
+    type Output = Self;
+
+    /// Returns a [`BitField`](crate::BitField) with the bits shifted right by the magnitude of
+    /// `rhs` if `rhs` is positive or shifted left if `rhs` is negative. Bits that are dropped 
+    /// off one side are wrapped around to fill the other side.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex, bx};
+    ///
+    /// let bf = BitField::from_bin_str("1100 0000 1111 00");
+    /// let bf = bf >> bx!(,2);
+    /// assert_eq!(bf, BitField::from_bin_str("0011 0000 0011 11"));
+    /// let bf = bf >> bx!(1 ,4);
+    /// assert_eq!(bf, BitField::from_bin_str("1100 0000 1111 00"));
+    ///
+    /// // Negative bit indexes will result in left shifts
+    /// let bf = bf >> -bx!(1 ,4);
+    /// assert_eq!(bf, BitField::from_bin_str("0011 0000 0011 11"));
+    ///```
+    fn shr(self, rhs: BitIndex) -> Self::Output {
+        let n = rhs.total_bits();
+        if n < 0 {
+            self << (n.abs() as usize)
+        } else {
+            self >> (n as usize)
+        }
+    }
+}
+
+impl std::ops::ShrAssign<BitIndex> for BitField  {
+
+    /// Transforms `self` by shifting all bits to the right by the magnitude of
+    /// `rhs` if `rhs` is positive or shifted left if `rhs` is negative. Bits that are dropped 
+    /// off one side are wrapped around to fill the other side.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex, bx};
+    ///
+    /// let mut bf = BitField::from_bin_str("1100 0000 1111 00");
+    /// bf >>= bx!(,2);
+    /// assert_eq!(bf, BitField::from_bin_str("0011 0000 0011 11"));
+    /// bf >>= bx!(1, 4);
+    /// assert_eq!(bf, BitField::from_bin_str("1100 0000 1111 00"));
+    ///
+    /// // Negative bit indexes will result in left shifts
+    /// bf >>= -bx!(1, 4);
+    /// assert_eq!(bf, BitField::from_bin_str("0011 0000 0011 11"));
+    ///```
+    fn shr_assign(&mut self, rhs: BitIndex){
         *self = std::mem::take(self) >> rhs;
     }
 }
