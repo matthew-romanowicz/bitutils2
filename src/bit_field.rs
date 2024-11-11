@@ -548,7 +548,42 @@ impl BitField {
         } else {
             *self = new.clone();
         }
-        
+    }
+
+    /// Inserts the bits specified in `new` to the left of `self`, shifting the
+    /// existing contents of `self` right to accommodate the new data without changing
+    /// `self`'s length. If `new` is longer than `self`, then `self` will be overwritten
+    /// with the leftmost data in `new`.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_bin_str("0101 1100 1100 0011 1010");
+    ///
+    /// // When new is shorter than self, self's data is right shifted by new's length
+    /// bf.shove_right(BitField::from_bin_str("1101 00"));
+    /// assert_eq!(bf, BitField::from_bin_str("1101 0001 0111 0011 0000"));
+    ///
+    /// // When new is the same length as self, self is overwritten with the data in new
+    /// bf.shove_right(BitField::from_bin_str("0101 1010 1101 0011 1100"));
+    /// assert_eq!(bf, BitField::from_bin_str("0101 1010 1101 0011 1100"));
+    ///
+    /// // When new is longer than self, self is overwritten with the leftmost data in new
+    /// bf.shove_right(BitField::from_bin_str("1100 0011 1001 0110 0101 1100"));
+    /// assert_eq!(bf, BitField::from_bin_str("1100 0011 1001 0110 0101"));
+    ///```
+    pub fn shove_right(&mut self, mut new: BitField) {
+        if new.len() < self.len() {
+            self.truncate(self.len() - new.len());
+            std::mem::swap(self, &mut new);
+            self.extend(&new);
+        } else if new.len() > self.len() {
+            new.truncate(self.len());
+            std::mem::swap(self, &mut new);
+        } else {
+            *self = new;
+        }
     }
 
     /// Returns a slice of `self` that may extend beyond the length of `self`. The returned
