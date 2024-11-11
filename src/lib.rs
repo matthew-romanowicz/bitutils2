@@ -286,10 +286,6 @@ mod match_tests {
     #[test]
     fn sint_char_class() {
         let v = vec![0b01100101, 0b01001110, 0b10010011, 0b11111111, 0b01010010, 0b00010011, 0b00010011];
-        // assert_eq!(BinRegex::new("[>u3:0..3]+[u3:^0..3]").unwrap().match_length(&v), Some(BitIndex::new(1, 4)));
-        // assert_eq!(BinRegex::new("[u4:^0..2]*[>u4:0..2]+").unwrap().match_length(&v), Some(BitIndex::new(5, 4)));
-        // assert_eq!(BinRegex::new("[u12:2514]").unwrap().find(&v).unwrap().span(), (bx!(,9), bx!(,9+12)));
-        // assert_eq!(BinRegex::new("[>u20:1026313]").unwrap().find(&v).unwrap().span(), (bx!(3, 3), bx!(5, 7)));
         assert_eq!(BinRegex::new("[<s6:-7]").unwrap().find(&v).unwrap().span(), (bx!(1, 1), bx!(1, 7)));
         assert_eq!(BinRegex::new("[<s16:-32659]").unwrap().find(&v).unwrap().span(), (bx!(2, 0), bx!(4, 0)));
         assert_eq!(BinRegex::new("[<s16:12577]").unwrap().find(&v).unwrap().span(), (bx!(4, 4), bx!(6, 4)));
@@ -297,6 +293,18 @@ mod match_tests {
         assert_eq!(BinRegex::new("[>s16:8497]").unwrap().find(&v).unwrap().span(), (bx!(4, 4), bx!(6, 4)));
         assert_eq!(BinRegex::new("[>s16:-5119]").unwrap().find(&v).unwrap().span(), (bx!(2, 0), bx!(4, 0)));
         assert_eq!(BinRegex::new("[>s6:-7][>s8:-150..-100]").unwrap().find(&v).unwrap().span(), (bx!(2, 3), bx!(4, 1)));
+    }
+
+    #[test]
+    fn nint_char_class() {
+        let v = vec![0b01100101, 0b01001110, 0b10010011, 0b11111111, 0b01010010, 0b00010011, 0b00010011];
+        assert_eq!(BinRegex::new("[<n6:-29]").unwrap().find(&v).unwrap().span(), (bx!(1, 1), bx!(1, 7)));
+        assert_eq!(BinRegex::new("[<n16:-28870]").unwrap().find(&v).unwrap().span(), (bx!(1, 0), bx!(3, 0)));
+        assert_eq!(BinRegex::new("[<n16:-3871]").unwrap().find(&v).unwrap().span(), (bx!(4, 4), bx!(6, 4)));
+        assert_eq!(BinRegex::new("[>n6:-29]").unwrap().find(&v).unwrap().span(), (bx!(1, 1), bx!(1, 7)));
+        assert_eq!(BinRegex::new("[>n16:-7951]").unwrap().find(&v).unwrap().span(), (bx!(4, 4), bx!(6, 4)));
+        assert_eq!(BinRegex::new("[>n16:14735]").unwrap().find(&v).unwrap().span(), (bx!(1, 0), bx!(3, 0)));
+        assert_eq!(BinRegex::new("[>n6:-29][>n8:-100..-70]").unwrap().find(&v).unwrap().span(), (bx!(2, 3), bx!(4, 1)));
     }
 
     #[test]
