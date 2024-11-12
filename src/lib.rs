@@ -308,6 +308,17 @@ mod match_tests {
     }
 
     #[test]
+    fn f32_char_class() {
+        let v = vec![0b01100101, 0b01001110, 0b10010011, 0b11111111, 0b01010010, 0b00010011, 0b00010011];
+        assert_eq!(BinRegex::new("[>f32:-1.450390125482823e+25]").unwrap().find(&v).unwrap().span(), (bx!(1, 4), bx!(5, 4)));
+        assert_eq!(BinRegex::new("[<f32:1.6618762643686762e-18]").unwrap().find(&v).unwrap().span(), (bx!(1, 4), bx!(5, 4)));
+        assert_eq!(BinRegex::new("[>f32:1e-5..1]").unwrap().find(&v).unwrap().span(), (bx!(1, 2), bx!(5, 2)));
+        assert_eq!(BinRegex::new("[>f32:-1e-26..0]").unwrap().find(&v).unwrap().span(), (bx!(2, 0), bx!(6, 0)));
+        assert_eq!(BinRegex::new("[<f32:100..120]").unwrap().find(&v).unwrap().span(), (bx!(1, 5), bx!(5, 5)));
+        assert_eq!(BinRegex::new("[<f32:-snan]").unwrap().find(&v).unwrap().span(), (bx!(0, 0), bx!(4, 0)));
+    }
+
+    #[test]
     fn advanced() {
         let v = vec![0b11010101, 0b00110100, 0b11010100, 0b11010101, 0b11110000];
         assert_eq!(BinRegex::new("''(_')*__").unwrap().match_length(&v), Some(bx!(,10)));

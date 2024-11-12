@@ -1,4 +1,4 @@
-//! Provides routines for searching binary data structures (implementing [`BitIndexable`](crate::BitIndexable)) for specified patterns
+//! Provides routines for searching binary data structures (implementing [`BitIndexable`]) for specified patterns
 //!
 //! # Syntax
 //!
@@ -59,7 +59,7 @@
 use std::collections::HashSet;
 
 mod parse_helpers;
-use crate::bin_regex::parse_helpers::{EscapeIter, escape_vec, find_right_delimiter};
+use crate::bin_regex::parse_helpers::{escape_vec, find_right_delimiter};
 
 use crate::bx;
 use crate::bit_index::{BitIndex, BitIndexable};
@@ -92,7 +92,8 @@ enum DynamicCharacterClass {
     TwosCompInt(CharClass<TwosCompInt>),
     OnesCompInt(CharClass<OnesCompInt>),
     SignMagInt(CharClass<SignMagInt>),
-    NegaInt(CharClass<NegaInt>)
+    NegaInt(CharClass<NegaInt>),
+    Float32(CharClass<Float32>)
 }
 
 impl DynamicCharacterClass {
@@ -102,7 +103,8 @@ impl DynamicCharacterClass {
             DynamicCharacterClass::TwosCompInt(cls) => cls.input_length(),
             DynamicCharacterClass::OnesCompInt(cls) => cls.input_length(),
             DynamicCharacterClass::SignMagInt(cls) => cls.input_length(),
-            DynamicCharacterClass::NegaInt(cls) => cls.input_length()
+            DynamicCharacterClass::NegaInt(cls) => cls.input_length(),
+            DynamicCharacterClass::Float32(cls) => cls.input_length(),
         }
     }
 
@@ -112,7 +114,8 @@ impl DynamicCharacterClass {
             DynamicCharacterClass::TwosCompInt(cls) => cls.matches(input),
             DynamicCharacterClass::OnesCompInt(cls) => cls.matches(input),
             DynamicCharacterClass::SignMagInt(cls) => cls.matches(input),
-            DynamicCharacterClass::NegaInt(cls) => cls.matches(input)
+            DynamicCharacterClass::NegaInt(cls) => cls.matches(input),
+            DynamicCharacterClass::Float32(cls) => cls.matches(input)
         }
     }
 }
@@ -148,12 +151,12 @@ enum StateTransition {
     CharacterClass(std::rc::Rc<DynamicCharacterClass>)
 }
 
-enum TextEncoding {
-    Ascii,
-    Utf8,
-    Utf16,
-    Hex
-}
+// enum TextEncoding {
+//     Ascii,
+//     Utf8,
+//     Utf16,
+//     Hex
+// }
 
 // trait CharClass: std::fmt::Debug {
 //     fn input_length(&self) -> BitIndex;
@@ -451,14 +454,108 @@ impl std::cmp::PartialOrd for NegaInt {
     }
 }
 
+#[derive(Clone, Debug)]
+struct Float32(f32);
+impl Float32 {
+    fn canonical_form(&self) -> u32 {
+        let mut u = self.0.clone().to_bits();
+
+        // If NaN...
+        if u & 0x7F800000 == 0x7F800000 {
+            // for NaN, mask all but the most significant mantissa 
+            // bit (the quiet/signaling bit) since those bits don't
+            // matter
+            u &= 0xFFC00000;
+            // Set the least significant mantissa bit to 1 to differentiate
+            // it from infinity
+            u |= 0x00000001;
+            
+        }
+        u
+    }
+}
+impl FromBitField for Float32 {
+    fn from_bf_be(bf: &BitField) -> Float32 {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 32 {
+            bf.truncate(BitIndex::bits(32));
+        } else if n < 32 {
+            panic!("Float 32 cannot be formed from a BitField with length {}", bf.len())
+        }
+
+        Float32(f32::from_be_bytes(bf.into_array().unwrap()))
+    }
+
+    fn from_bf_le(bf: &BitField) -> Float32 {
+        let mut bf = bf.clone();
+        let n = bf.len().total_bits();
+        if n > 32 {
+            bf.truncate(BitIndex::bits(32));
+        } else if n < 32 {
+            panic!("Float 32 cannot be formed from a BitField with length {}", bf.len())
+        }
+
+        Float32(f32::from_le_bytes(bf.into_array().unwrap()))
+    }
+}
+
+
+impl std::hash::Hash for Float32 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.canonical_form().hash(state);
+    }
+}
+
+impl PartialEq for Float32 {
+    fn eq(&self, other: &Float32) -> bool {
+        self.canonical_form() == other.canonical_form()
+    }
+}
+
+impl Eq for Float32 {}
+
+impl std::str::FromStr for Float32 {
+    type Err = std::num::ParseFloatError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "snan" | "+snan" => {
+                // Canonical form for positive signaling NAN
+                Ok(Float32(f32::from_bits(0x7F800001)))
+            },
+            "-snan" => {
+                // Canonical form for negative signaling NAN
+                Ok(Float32(f32::from_bits(0xFF800001)))
+            },
+            "qnan" | "+qnan" => {
+                // Canonical form for positive quiet NAN
+                Ok(Float32(f32::from_bits(0x7FC00001)))
+            },
+            "-qnan" => {
+                // Canonical form for negative quiet NAN
+                Ok(Float32(f32::from_bits(0xFFC00001)))
+            },
+            _ => Ok(Float32(f32::from_str(s)?))
+        }
+        
+    }
+}
+
+impl std::cmp::PartialOrd for Float32 {
+    fn partial_cmp(&self, other: &Float32) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
 #[derive(PartialEq, Eq, Debug)]
 enum Endian {
     Big,
     Little
 }
 
-#[derive(PartialEq, Eq, Debug)]
-struct CharClass<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField> {
+#[derive(PartialEq, Debug)]
+struct CharClass<T: std::str::FromStr + PartialOrd + std::hash::Hash + FromBitField + std::cmp::Eq> {
     inverted: bool,
     endian: Endian,
     options: HashSet<T>,
@@ -466,7 +563,7 @@ struct CharClass<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField> {
     input_length: BitIndex
 }
 
-impl<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug> CharClass<T> {
+impl<T: std::str::FromStr + PartialOrd + std::hash::Hash + FromBitField + std::cmp::Eq + std::fmt::Debug> CharClass<T> {
     fn input_length(&self) -> BitIndex {
         self.input_length
     }
@@ -547,13 +644,13 @@ fn parse_ascii_char_class(input: &Vec<char>, endian: Endian) -> Result<CharClass
     Ok(CharClass::<UInt> {inverted, endian, options, ranges, input_length: BitIndex::new(1, 0)})
 }
 
-enum RangeParseProgress<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug> {
+enum RangeParseProgress<T: std::str::FromStr + PartialOrd + std::hash::Hash + FromBitField + std::fmt::Debug + std::cmp::Eq> {
     NotStarted,
     OneDot(T),
     TwoDot(T)
 }
 
-fn parse_int_char_class<T: std::str::FromStr + Ord + std::hash::Hash + FromBitField + std::fmt::Debug>(input: &Vec<char>, nbits: usize, endian: Endian) -> Result<CharClass<T>, String>
+fn parse_int_char_class<T: std::str::FromStr + PartialOrd + std::hash::Hash + FromBitField + std::fmt::Debug + Eq>(input: &Vec<char>, nbits: usize, endian: Endian) -> Result<CharClass<T>, String>
 where <T as std::str::FromStr>::Err: std::fmt::Display {
     let input_length = bx!(,nbits);
     let mut input_iter = escape_vec(input).peekable();
@@ -575,7 +672,6 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
         }
         match c {
             ',' => {
-                println!("Prev word: {}", prev_word.iter().collect::<String>());
                 match prev_word.iter().collect::<String>().parse::<T>() {
                     Ok(n) => {
                         match range_prog {
@@ -596,7 +692,6 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
             '.' => {
                 match range_prog {
                     RangeParseProgress::NotStarted => {
-                        println!("Prev word: {}", prev_word.iter().collect::<String>());
                         match prev_word.iter().collect::<String>().parse::<T>() {
                             Ok(n) => {
                                 range_prog = RangeParseProgress::OneDot(n);
@@ -633,7 +728,6 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
     if prev_word.is_empty() {
         return Err("Encountered end of character class before expected".to_string())
     }
-    println!("Last word: '{}'", prev_word.iter().collect::<String>());
     match prev_word.iter().collect::<String>().parse::<T>() {
         Ok(n) => {
             match range_prog {
@@ -647,6 +741,48 @@ where <T as std::str::FromStr>::Err: std::fmt::Display {
             }
         },
         Err(msg) => return Err(msg.to_string())
+    }
+
+    Ok(CharClass::<T> {inverted, endian, options, ranges, input_length})
+}
+
+fn parse_num_char_class<T: std::str::FromStr + PartialOrd + std::hash::Hash + FromBitField + std::fmt::Debug + Eq>(input: &Vec<char>, nbits: usize, endian: Endian) -> Result<CharClass<T>, String>
+where <T as std::str::FromStr>::Err: std::fmt::Display {
+    let input_length = bx!(,nbits);
+    let mut input_iter = input.into_iter().peekable();
+    let mut options = HashSet::<T>::new();
+    let mut ranges = Vec::<(T, T)>::new();
+
+    let inverted = if input_iter.peek() == Some(&&'^') {
+        input_iter.next();
+        true
+    } else {
+        false
+    };
+
+    let body: String = input_iter.collect();
+
+    for word in body.split(",") {
+        match word.split_once("..") {
+            Some((lhs, rhs)) => {
+                let lhs = match lhs.parse::<T>() {
+                    Ok(n) => n,
+                    Err(err) => return Err(err.to_string())
+                };
+                let rhs = match rhs.parse::<T>() {
+                    Ok(n) => n,
+                    Err(err) => return Err(err.to_string())
+                };
+                ranges.push((lhs, rhs));
+            },
+            None => {
+                let value = match word.parse::<T>() {
+                    Ok(n) => n,
+                    Err(err) => return Err(err.to_string())
+                };
+                options.insert(value);
+            }
+        }
     }
 
     Ok(CharClass::<T> {inverted, endian, options, ranges, input_length})
@@ -686,7 +822,7 @@ fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
                                 }
                             },
                             'u' => {
-                                let cls_result = parse_int_char_class::<UInt>(&input[i+1..].to_vec(), n, endian);
+                                let cls_result = parse_num_char_class::<UInt>(&input[i+1..].to_vec(), n, endian);
                                 match cls_result {
                                     Ok(cls) => {
                                         return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::UInt(cls))))
@@ -695,7 +831,7 @@ fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
                                 }
                             },
                             'i' => {
-                                let cls_result = parse_int_char_class::<TwosCompInt>(&input[i+1..].to_vec(), n, endian);
+                                let cls_result = parse_num_char_class::<TwosCompInt>(&input[i+1..].to_vec(), n, endian);
                                 match cls_result {
                                     Ok(cls) => {
                                         return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::TwosCompInt(cls))))
@@ -704,7 +840,7 @@ fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
                                 }
                             },
                             'o' => {
-                                let cls_result = parse_int_char_class::<OnesCompInt>(&input[i+1..].to_vec(), n, endian);
+                                let cls_result = parse_num_char_class::<OnesCompInt>(&input[i+1..].to_vec(), n, endian);
                                 match cls_result {
                                     Ok(cls) => {
                                         return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::OnesCompInt(cls))))
@@ -713,7 +849,7 @@ fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
                                 }
                             },
                             's' => {
-                                let cls_result = parse_int_char_class::<SignMagInt>(&input[i+1..].to_vec(), n, endian);
+                                let cls_result = parse_num_char_class::<SignMagInt>(&input[i+1..].to_vec(), n, endian);
                                 match cls_result {
                                     Ok(cls) => {
                                         return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::SignMagInt(cls))))
@@ -722,10 +858,19 @@ fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
                                 }
                             },
                             'n' => {
-                                let cls_result = parse_int_char_class::<NegaInt>(&input[i+1..].to_vec(), n, endian);
+                                let cls_result = parse_num_char_class::<NegaInt>(&input[i+1..].to_vec(), n, endian);
                                 match cls_result {
                                     Ok(cls) => {
                                         return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::NegaInt(cls))))
+                                    },
+                                    Err(msg) => return Err(msg)
+                                }
+                            },
+                            'f' => {
+                                let cls_result = parse_num_char_class::<Float32>(&input[i+1..].to_vec(), n, endian);
+                                match cls_result {
+                                    Ok(cls) => {
+                                        return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::Float32(cls))))
                                     },
                                     Err(msg) => return Err(msg)
                                 }
@@ -1255,7 +1400,7 @@ fn check_state_flags<T: BitIndexable>(input: &T, flags: &Vec<StateFlag>, offset:
 }
 
 
-/// Structure to contain a single [`BinRegex`](crate::bin_regex::BinRegex) match.
+/// Structure to contain a single [`BinRegex`] match.
 ///
 /// # Examples
 /// ```rust
@@ -1319,7 +1464,7 @@ impl<'a, T: BitIndexable> BinMatch<'a, T> {
         (self.start, self.end)
     }
 
-    /// Returns the contents of the match as a [`BitField`](crate::BitField)
+    /// Returns the contents of the match as a [`BitField`]
     pub fn as_bf(&self) -> BitField {
         self.input.bit_slice(&self.start, &self.end)
     }
@@ -1527,7 +1672,7 @@ impl<'a, T: BitIndexable> CapturePathGenerator<'a, T> {
 }
 
 /// A compiled variation of regular expressions intended for searching binary data. A
-/// [`BinRegex`](crate::BinRegex) can be used to search binary data for patterns
+/// [`BinRegex`] can be used to search binary data for patterns
 pub struct BinRegex {
     fsm: Vec<Vec<(usize, StateTransition, Vec<StateFlag>)>>,
     pub n_groups: usize,
@@ -1570,7 +1715,7 @@ impl BinRegex {
         }
     }
 
-    /// Searches for the first match in the input given, and if found returns a [`BinMatch`](crate::BinMatch)
+    /// Searches for the first match in the input given, and if found returns a [`BinMatch`]
     /// object corresponding to the match. If no match is found, returns `None`. 
     ///
     /// # Examples
@@ -1586,7 +1731,7 @@ impl BinRegex {
     /// let re2 = BinRegex::new("ABC_{8,}'_").unwrap();
     /// assert_eq!(re2.find(&input), None);
     ///```
-    pub fn find<'a, T>(&'a self, input: &'a T) -> Option<BinMatch<T>> 
+    pub fn find<'a, T>(&self, input: &'a T) -> Option<BinMatch<'a, T>> 
     where &'a T: BitIndexable, T: BitIndexable {
         let mut gen = CapturePathGenerator::new(&self.fsm, input);
 
