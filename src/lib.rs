@@ -4,6 +4,9 @@ pub use crate::bit_index::{BitIndex, BitIndexable};
 mod bit_field;
 pub use crate::bit_field::{BitField, BitPad};
 
+mod semb;
+pub use crate::semb::{Decimal, Semb};
+
 pub mod bin_regex;
 pub use crate::bin_regex::{BinRegex, BinMatch, BinCaptures};
 
