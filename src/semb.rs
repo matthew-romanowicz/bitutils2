@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 // https://nigeltao.github.io/blog/2020/parse-number-f64-simple.html
 
 pub struct Decimal {
@@ -552,6 +554,62 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
         // BiasedFp { f: mantissa, e: power2 }
     }
 
+    // https://doc.rust-lang.org/src/core/num/dec2flt/parse.rs.html
+    /// Try to parse a special, non-finite float.
+    pub fn parse_inf_nan(s: &[u8], negative: bool) -> Option<Self> {
+        // Since a valid string has at most the length 8, we can load
+        // all relevant characters into a u64 and work from there.
+        // This also generates much better code.
+
+        let mut register;
+        let len: usize;
+
+        // All valid strings are either of length 8 or 3.
+        if s.len() == 8 {
+            register = s.read_u64();
+            len = 8;
+        } else if s.len() == 3 {
+            let a = s[0] as u64;
+            let b = s[1] as u64;
+            let c = s[2] as u64;
+            register = (c << 16) | (b << 8) | a;
+            len = 3;
+        } else if s.len() == 4 {
+            let a = s[0] as u64;
+            let b = s[1] as u64;
+            let c = s[2] as u64;
+            let d = s[3] as u64;
+            register = (d << 24) | (c << 16) | (b << 8) | a;
+            len = 4;
+        } else {
+            return None;
+        }
+
+        // Clear out the bits which turn ASCII uppercase characters into
+        // lowercase characters. The resulting string is all uppercase.
+        // What happens to other characters is irrelevant.
+        register &= 0xDFDFDFDFDFDFDFDF;
+
+        // u64 values corresponding to relevant cases
+        const INF_3: u64 = 0x464E49; // "INF"
+        const INF_8: u64 = 0x5954494E49464E49; // "INFINITY"
+        const NAN: u64 = 0x4E414E; // "NAN"
+        const SNAN: u64 = 0x4E414E53; // "SNAN"
+        const QNAN: u64 = 0x4E414E51; // "QNAN"
+
+        // Match register value to constant to parse string.
+        // Also match on the string length to catch edge cases
+        // like "inf\0\0\0\0\0".
+        let float = match (register, len) {
+            (INF_3, 3) | (INF_8, 8) => Self::inf(negative),
+            (NAN, 3) | (QNAN, 4) => Self::qnan(negative),
+            (SNAN, 4) => Self::snan(negative),
+            _ => return None,
+        };
+
+        Some(float)
+    }
+
     fn to_f64(&self) -> f64 {
         let mut bits: u64 = self.m as u64 & 0x000FFFFFFFFFFFFF;
         bits |= (self.e as u64 & 0x7FF) << 52;
@@ -567,31 +625,66 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
     }
 }
 
-// impl FromStr for Semb {
-//     type Err = ParseFloatError;
+#[derive(Clone, Debug)]
+enum ParseSembErrorKind {
+    Empty,
+    UnexpectedEndOfInput,
+    InvalidCharacter(usize)
+}
 
-//     fn from_str(s: &str) -> Result<Self, Self::Err> {
-//         let mut s = s.as_bytes();
-//         let c = if let Some(&c) = s.first() {
-//             c
-//         } else {
-//             return Err(pfe_empty());
-//         };
-//         let negative = c == b'-';
-//         if c == b'-' || c == b'+' {
-//             s = &s[1..];
-//         }
-//         if s.is_empty() {
-//             return Err(pfe_invalid());
-//         }
+#[derive(Clone, Debug)]
+pub struct ParseSembError {
+    kind: ParseSembErrorKind
+}
 
-//         match s {
-//             "nan" => {
+impl ParseSembError {
+    fn new(kind: ParseSembErrorKind) -> ParseSembError {
+        ParseSembError {kind}
+    }
 
-//             }
-//         }
-//     }
-// }
+    fn empty() -> ParseSembError {
+        ParseSembError::new(ParseSembErrorKind::Empty)
+    }
+
+    fn eoi() -> ParseSembError {
+        ParseSembError::new(ParseSembErrorKind::UnexpectedEndOfInput)
+    }
+}
+
+impl std::fmt::Display for ParseSembError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            ParseSembErrorKind::Empty => write!(f, "Input is empty"),
+            ParseSembErrorKind::UnexpectedEndOfInput => write!(f, "Encountered unexpected end of input"),
+            ParseSembErrorKind::InvalidCharacter(i) => write!(f, "Invalid character encountered at position {}", i)
+        }
+    }    
+}
+
+impl<const S: usize, const E: usize, const M: usize, const B: i32> FromStr for Semb<S, E, M, B> {
+    type Err = ParseSembError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut s = s.as_bytes();
+        let c = if let Some(&c) = s.first() {
+            c
+        } else {
+            return Err(ParseSembError::empty());
+        };
+        let negative = c == b'-';
+        if c == b'-' || c == b'+' {
+            s = &s[1..];
+        }
+        if s.is_empty() {
+            return Err(ParseSembError::eoi());
+        }
+
+        match Self::parse_inf_nan(s, negative) {
+            Some(f) => Ok(f),
+            None => Ok(Self::parse_long_mantissa(s))
+        }
+    }
+}
 
 pub type SembF32 = Semb<1, 8, 23, 127>;
 pub type SembF64 = Semb<1, 11, 52, 1023>;
@@ -605,47 +698,47 @@ mod semb_tests {
         // Float 64
         assert_eq!(SembF64::max_digits(), 768);
 
-        let fp = SembF64::qnan(false);
+        let fp = SembF64::from_str("nan").unwrap();
         let fp2 = f64::from_str("nan").unwrap();
         assert_eq!(fp.to_f64().to_bits(), fp2.to_bits());
 
-        let fp = SembF64::qnan(true);
+        let fp = SembF64::from_str("-qnan").unwrap();
         let fp2 = f64::from_str("-nan").unwrap();
         assert_eq!(fp.to_f64().to_bits(), fp2.to_bits());
 
-        let fp = SembF64::inf(false);
+        let fp = SembF64::from_str("infinity").unwrap();
         let fp2 = f64::from_str("inf").unwrap();
         assert_eq!(fp.to_f64().to_bits(), fp2.to_bits());
 
-        let fp = SembF64::inf(true);
+        let fp = SembF64::from_str("-inf").unwrap();
         let fp2 = f64::from_str("-inf").unwrap();
         assert_eq!(fp.to_f64().to_bits(), fp2.to_bits());
 
-        let fp = SembF64::parse_long_mantissa(&"0".as_bytes());
+        let fp = SembF64::from_str("0").unwrap();
         let fp2 = f64::from_str("0").unwrap();
         assert_eq!(fp.to_f64(), fp2);
 
-        let fp = SembF64::parse_long_mantissa(&".12345".as_bytes());
+        let fp = SembF64::from_str(".12345").unwrap();
         let fp2 = f64::from_str(".12345").unwrap();
         assert_eq!(fp.to_f64(), fp2);
 
-        let fp = SembF64::parse_long_mantissa(&".12345e-23".as_bytes());
+        let fp = SembF64::from_str(".12345e-23").unwrap();
         let fp2 = f64::from_str(".12345e-23").unwrap();
         assert_eq!(fp.to_f64(), fp2);
 
-        let fp = SembF64::parse_long_mantissa(&"1.2345".as_bytes());
+        let fp = SembF64::from_str("1.2345").unwrap();
         let fp2 = f64::from_str("1.2345").unwrap();
         assert_eq!(fp.to_f64(), fp2);
 
-        let fp = SembF64::parse_long_mantissa(&"123.45".as_bytes());
+        let fp = SembF64::from_str("123.45").unwrap();
         let fp2 = f64::from_str("123.45").unwrap();
         assert_eq!(fp.to_f64(), fp2);
 
-        let fp = SembF64::parse_long_mantissa(&"12345".as_bytes());
+        let fp = SembF64::from_str("12345").unwrap();
         let fp2 = f64::from_str("12345").unwrap();
         assert_eq!(fp.to_f64(), fp2);
 
-        let fp = SembF64::parse_long_mantissa(&"123.45e+15".as_bytes());
+        let fp = SembF64::from_str("123.45e+15").unwrap();
         let fp2 = f64::from_str("123.45e+15").unwrap();
         assert_eq!(fp.to_f64(), fp2);
     }
@@ -653,49 +746,37 @@ mod semb_tests {
     #[test]
     fn semb_f32_test() {
 
-        let fp = SembF32::qnan(false);
+        let test_strings = vec![
+            "nan",
+            "-nan",
+            "inf",
+            "-inf",
+            "infinity",
+            "-infinity",
+            "0",
+            ".12345e-23",
+            ".12345",
+            "1.2345",
+            "123.45",
+            "123.45e+15",
+            "12345",
+            // https://github.com/rust-lang/rust/blob/master/src/etc/test-float-parse/src/validate/tests.rs
+            "1.00000005960464477539062499999",
+            "1.000000059604644775390625",
+            "1.00000005960464477539062500001",
+            "1.00000017881393432617187499999",
+            "1.000000178813934326171875",
+            "1.00000017881393432617187500001"
+        ];
+
+        for s in test_strings {
+            let semb = SembF32::from_str("123.45").unwrap();
+            let f = f32::from_str("123.45").unwrap();
+            assert_eq!(semb.to_f32().to_bits(), f.to_bits());
+        }
+
+        let fp = SembF32::from_str("qnan").unwrap();
         let fp2 = f32::from_str("nan").unwrap();
         assert_eq!(fp.to_f32().to_bits(), fp2.to_bits());
-
-        let fp = SembF32::qnan(true);
-        let fp2 = f32::from_str("-nan").unwrap();
-        assert_eq!(fp.to_f32().to_bits(), fp2.to_bits());
-
-        let fp = SembF32::inf(false);
-        let fp2 = f32::from_str("inf").unwrap();
-        assert_eq!(fp.to_f32().to_bits(), fp2.to_bits());
-
-        let fp = SembF32::inf(true);
-        let fp2 = f32::from_str("-inf").unwrap();
-        assert_eq!(fp.to_f32().to_bits(), fp2.to_bits());
-
-        let fp = SembF32::parse_long_mantissa(&"0".as_bytes());
-        let fp2 = f32::from_str("0").unwrap();
-        assert_eq!(fp.to_f32(), fp2);
-
-        let fp = SembF32::parse_long_mantissa(&".12345e-23".as_bytes());
-        let fp2 = f32::from_str(".12345e-23").unwrap();
-        assert_eq!(fp.to_f32(), fp2);
-
-        let fp = SembF32::parse_long_mantissa(&".12345".as_bytes());
-        let fp2 = f32::from_str(".12345").unwrap();
-        assert_eq!(fp.to_f32(), fp2);
-
-        let fp = SembF32::parse_long_mantissa(&"1.2345".as_bytes());
-        let fp2 = f32::from_str("1.2345").unwrap();
-        assert_eq!(fp.to_f32(), fp2);
-
-        let fp = SembF32::parse_long_mantissa(&"123.45".as_bytes());
-        let fp2 = f32::from_str("123.45").unwrap();
-        assert_eq!(fp.to_f32(), fp2);
-
-        let fp = SembF32::parse_long_mantissa(&"123.45e+15".as_bytes());
-        let fp2 = f32::from_str("123.45e+15").unwrap();
-        assert_eq!(fp.to_f32(), fp2);
-
-        let fp = SembF32::parse_long_mantissa(&"12345".as_bytes());
-        let fp2 = f32::from_str("12345").unwrap();
-        assert_eq!(fp.to_f32(), fp2);
-        // panic!("e={}, m={}", fp.e, fp.m);
     }
 }
