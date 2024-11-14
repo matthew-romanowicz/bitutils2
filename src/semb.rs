@@ -1,27 +1,103 @@
 use std::str::FromStr;
 
+trait FromDecimal : Clone + Copy + std::convert::From<u8> + std::ops::Mul<Self, Output = Self> + std::ops::BitAnd<Self, Output = Self> + std::ops::MulAssign + std::ops::AddAssign
+        + std::ops::Shr<usize, Output = Self> + std::ops::Shl<usize, Output = Self> + std::ops::Sub<Self, Output = Self> + std::ops::Div<Self, Output = Self> 
+        + std::cmp::PartialOrd<Self> + std::ops::BitAndAssign {
+    // The max number of decimal digits that can be exactly represented
+    const MAX_DIGITS: usize;
+
+    // The max value that can be exactly represented
+    const MAX_VALUE: Self;
+
+    fn into_u8(&self) -> u8;
+
+    fn is_zero(&self) -> bool;
+
+    fn gt_zero(&self) -> bool;
+
+    fn into_u128(&self) -> u128;
+
+}
+
+impl FromDecimal for u64 {
+    const MAX_DIGITS: usize = Self::MAX.ilog10() as usize;
+    const MAX_VALUE: Self = Self::MAX;
+
+    fn into_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    fn is_zero(&self) -> bool {
+        *self == 0
+    }
+
+    fn gt_zero(&self) -> bool {
+        *self > 0
+    }
+
+    fn into_u128(&self) -> u128 {
+        *self as u128
+    }
+}
+
+impl FromDecimal for u128 {
+    const MAX_DIGITS: usize = Self::MAX.ilog10() as usize;
+    const MAX_VALUE: Self = Self::MAX;
+
+    fn into_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    fn is_zero(&self) -> bool {
+        *self == 0
+    }
+
+    fn gt_zero(&self) -> bool {
+        *self > 0
+    }
+
+    fn into_u128(&self) -> u128 {
+        *self
+    }
+}
+
 // https://nigeltao.github.io/blog/2020/parse-number-f64-simple.html
 
-pub struct Decimal {
+pub struct Decimal<T> {
     digits: Vec<u8>,
     decimal_point: i32,
     max_digits: usize,
     num_digits: usize,
-    truncated: bool
+    truncated: bool,
+    phantom: std::marker::PhantomData<T>
 }
 
-impl Decimal {
-    /// The max digits that can be exactly represented in a 64-bit integer.
-    pub const MAX_DIGITS_WITHOUT_OVERFLOW: usize = 19;
+impl<T> std::fmt::Display for Decimal<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let bytes: Vec<u8> = self.digits.iter().take(self.num_digits).map(|b| b + 0x30).collect();
+        if self.truncated {
+            write!(f, "0.{}...e{}", std::str::from_utf8(&bytes).unwrap(), self.decimal_point)
+        } else {
+            write!(f, "0.{}e{}", std::str::from_utf8(&bytes).unwrap(), self.decimal_point)
+        }
+        
+    }
+}
+
+impl<T: FromDecimal> Decimal<T> {
+    /// The max digits that can be exactly represented in T.
+    // pub const MAX_DIGITS_WITHOUT_OVERFLOW: usize = 19;
+    pub const MAX_DIGITS_WITHOUT_OVERFLOW: usize = T::MAX_DIGITS;
     pub const DECIMAL_POINT_RANGE: i32 = 2047;
 
-    pub fn new(max_digits: usize) -> Decimal {
-        Decimal {
+    pub fn new(max_digits: usize) -> Decimal<T> {
+        Decimal::<T> {
             digits: vec![0; max_digits],
             decimal_point: 0,
             max_digits,
             num_digits: 0,
-            truncated: false
+            truncated: false,
+            phantom: std::marker::PhantomData
         }
     }
 
@@ -49,18 +125,18 @@ impl Decimal {
         }
     }
 
-    pub fn round(&self) -> u64 {
+    pub fn round(&self) -> T {
         if self.num_digits == 0 || self.decimal_point < 0 {
-            return 0;
-        } else if self.decimal_point > 18 {
-            return 0xFFFF_FFFF_FFFF_FFFF_u64;
+            return 0.into();
+        } else if self.decimal_point > Self::MAX_DIGITS_WITHOUT_OVERFLOW as i32 - 1 {
+            return T::MAX_VALUE;
         }
         let dp = self.decimal_point as usize;
-        let mut n = 0_u64;
+        let mut n: T = 0.into();
         for i in 0..dp {
-            n *= 10;
+            n *= 10.into();
             if i < self.num_digits {
-                n += self.digits[i] as u64;
+                n += self.digits[i].into();
             }
         }
         let mut round_up = false;
@@ -71,40 +147,42 @@ impl Decimal {
             }
         }
         if round_up {
-            n += 1;
+            n += 1.into();
         }
         n
     }
 
     /// Computes decimal * 2^shift.
     pub fn left_shift(&mut self, shift: usize) {
+        println!("Shift: {}", shift);
         if self.num_digits == 0 {
             return;
         }
-        let num_new_digits = number_of_digits_decimal_left_shift(self, shift);
+        let num_new_digits = number_of_digits_decimal_left_shift::<T>(self, shift);
         let mut read_index = self.num_digits;
         let mut write_index = self.num_digits + num_new_digits;
-        let mut n = 0_u64;
+        let mut n: T = 0.into();
         while read_index != 0 {
             read_index -= 1;
             write_index -= 1;
-            n += (self.digits[read_index] as u64) << shift;
-            let quotient = n / 10;
-            let remainder = n - (10 * quotient);
+            n += (<u8 as Into<T>>::into(self.digits[read_index])) << shift;
+            let quotient: T = n / 10.into();
+            let remainder: T = n - (quotient * 10.into());
             if write_index < self.max_digits {
-                self.digits[write_index] = remainder as u8;
-            } else if remainder > 0 {
+                self.digits[write_index] = remainder.into_u8();
+            } else if remainder.gt_zero() {
                 self.truncated = true;
             }
             n = quotient;
         }
-        while n > 0 {
+
+        while n.gt_zero() {
             write_index -= 1;
-            let quotient = n / 10;
-            let remainder = n - (10 * quotient);
+            let quotient: T = n / 10.into();
+            let remainder: T = n - (quotient * 10.into());
             if write_index < self.max_digits {
-                self.digits[write_index] = remainder as u8;
-            } else if remainder > 0 {
+                self.digits[write_index] = remainder.into_u8();
+            } else if remainder.gt_zero() {
                 self.truncated = true;
             }
             n = quotient;
@@ -121,16 +199,17 @@ impl Decimal {
     pub fn right_shift(&mut self, shift: usize) {
         let mut read_index = 0;
         let mut write_index = 0;
-        let mut n = 0_u64;
-        while (n >> shift) == 0 {
+        let mut n: T = 0.into();
+        while (n >> shift).is_zero() {
             if read_index < self.num_digits {
-                n = (10 * n) + self.digits[read_index] as u64;
+                n *= 10.into();
+                n += self.digits[read_index].into();
                 read_index += 1;
-            } else if n == 0 {
+            } else if n.is_zero() {
                 return;
             } else {
-                while (n >> shift) == 0 {
-                    n *= 10;
+                while (n >> shift).is_zero() {
+                    n *= 10.into();
                     read_index += 1;
                 }
                 break;
@@ -144,17 +223,18 @@ impl Decimal {
             self.truncated = false;
             return;
         }
-        let mask = (1_u64 << shift) - 1;
+        let mask = (<u8 as Into<T>>::into(1) << shift) - 1.into();
         while read_index < self.num_digits {
-            let new_digit = (n >> shift) as u8;
-            n = (10 * (n & mask)) + self.digits[read_index] as u64;
+            let new_digit: u8 = (n >> shift).into_u8();
+            n = ((n & mask) * 10.into());
+            n += self.digits[read_index].into();
             read_index += 1;
             self.digits[write_index] = new_digit;
             write_index += 1;
         }
-        while n > 0 {
-            let new_digit = (n >> shift) as u8;
-            n = 10 * (n & mask);
+        while n.gt_zero() {
+            let new_digit: u8 = (n >> shift).into_u8();
+            n = <u8 as Into<T>>::into(10) * (n & mask);
             if write_index < self.max_digits {
                 self.digits[write_index] = new_digit;
                 write_index += 1;
@@ -165,88 +245,97 @@ impl Decimal {
         self.num_digits = write_index;
         self.trim();
     }
-}
 
-/// Parse a big integer representation of the float as a decimal.
-pub fn parse_decimal(max_digits: usize, mut s: &[u8]) -> Decimal {
-    let mut d = Decimal::new(max_digits);
-    let start = s;
+    /// Parse a big integer representation of the float as a decimal.
+    pub fn parse_decimal(max_digits: usize, mut s: &[u8]) -> Self {
+        let mut d = Self::new(max_digits);
+        let start = s;
 
-    while let Some((&b'0', s_next)) = s.split_first() {
-        s = s_next;
-    }
-
-    s = s.parse_digits(|digit| d.try_add_digit(digit));
-
-    if let Some((b'.', s_next)) = s.split_first() {
-        s = s_next;
-        let first = s;
-        // Skip leading zeros.
-        if d.num_digits == 0 {
-            while let Some((&b'0', s_next)) = s.split_first() {
-                s = s_next;
-            }
-        }
-        while s.len() >= 8 && d.num_digits + 8 < max_digits {
-            let v = s.read_u64();
-            if !is_8digits(v) {
-                break;
-            }
-            d.digits[d.num_digits..].write_u64(v - 0x3030_3030_3030_3030);
-            d.num_digits += 8;
-            s = &s[8..];
-        }
-        s = s.parse_digits(|digit| d.try_add_digit(digit));
-        d.decimal_point = s.len() as i32 - first.len() as i32;
-    }
-    if d.num_digits != 0 {
-        // Ignore the trailing zeros if there are any
-        let mut n_trailing_zeros = 0;
-        for &c in start[..(start.len() - s.len())].iter().rev() {
-            if c == b'0' {
-                n_trailing_zeros += 1;
-            } else if c != b'.' {
-                break;
-            }
-        }
-        d.decimal_point += n_trailing_zeros as i32;
-        d.num_digits -= n_trailing_zeros;
-        d.decimal_point += d.num_digits as i32;
-        if d.num_digits > max_digits {
-            d.truncated = true;
-            d.num_digits = max_digits;
-        }
-    }
-    if let Some((&ch, s_next)) = s.split_first() {
-        if ch == b'e' || ch == b'E' {
+        while let Some((&b'0', s_next)) = s.split_first() {
             s = s_next;
-            let mut neg_exp = false;
-            if let Some((&ch, s_next)) = s.split_first() {
-                neg_exp = ch == b'-';
-                if ch == b'-' || ch == b'+' {
+        }
+
+        s = s.parse_digits(|digit| d.try_add_digit(digit));
+
+        if let Some((b'.', s_next)) = s.split_first() {
+            s = s_next;
+            let first = s;
+            // Skip leading zeros.
+            if d.num_digits == 0 {
+                while let Some((&b'0', s_next)) = s.split_first() {
                     s = s_next;
                 }
             }
-            let mut exp_num = 0_i32;
-
-            s.parse_digits(|digit| {
-                if exp_num < 0x10000 {
-                    exp_num = 10 * exp_num + digit as i32;
+            while s.len() >= 8 && d.num_digits + 8 < max_digits {
+                let v = s.read_u64();
+                if !is_8digits(v) {
+                    break;
                 }
-            });
-
-            d.decimal_point += if neg_exp { -exp_num } else { exp_num };
+                d.digits[d.num_digits..].write_u64(v - 0x3030_3030_3030_3030);
+                d.num_digits += 8;
+                s = &s[8..];
+            }
+            s = s.parse_digits(|digit| d.try_add_digit(digit));
+            d.decimal_point = s.len() as i32 - first.len() as i32;
         }
+        if d.num_digits != 0 {
+            // Ignore the trailing zeros if there are any
+            let mut n_trailing_zeros = 0;
+            for &c in start[..(start.len() - s.len())].iter().rev() {
+                if c == b'0' {
+                    n_trailing_zeros += 1;
+                } else if c != b'.' {
+                    break;
+                }
+            }
+            d.decimal_point += n_trailing_zeros as i32;
+            d.num_digits -= n_trailing_zeros;
+            d.decimal_point += d.num_digits as i32;
+            if d.num_digits > max_digits {
+                d.truncated = true;
+                d.num_digits = max_digits;
+            }
+        }
+        if let Some((&ch, s_next)) = s.split_first() {
+            if ch == b'e' || ch == b'E' {
+                s = s_next;
+                let mut neg_exp = false;
+                if let Some((&ch, s_next)) = s.split_first() {
+                    neg_exp = ch == b'-';
+                    if ch == b'-' || ch == b'+' {
+                        s = s_next;
+                    }
+                }
+                let mut exp_num = 0_i32;
+
+                s.parse_digits(|digit| {
+                    if exp_num < 0x10000 {
+                        exp_num = 10 * exp_num + digit as i32;
+                    }
+                });
+
+                
+
+                d.decimal_point += if neg_exp { -exp_num } else { exp_num };
+            }
+        }
+        for i in d.num_digits..std::cmp::min(max_digits, Self::MAX_DIGITS_WITHOUT_OVERFLOW) {
+            d.digits[i] = 0;
+            
+        }
+
+        // println!("Parsed decimal: {}", d);
+        d
     }
-    for i in d.num_digits..Decimal::MAX_DIGITS_WITHOUT_OVERFLOW {
-        d.digits[i] = 0;
-        
-    }
-    d
 }
 
-fn number_of_digits_decimal_left_shift(d: &Decimal, mut shift: usize) -> usize {
+
+
+fn number_of_digits_decimal_left_shift<T: std::ops::Shr<usize> + FromDecimal>(d: &Decimal<T>, mut shift: usize) -> usize {
     #[rustfmt::skip]
+    // First 5 bits of TABLE[n] indicates the maximum number of decimal digits added by a shift of n
+    // The last 11 bits of TABLE[n] and TABLE[n+1] indicate the start and end indices of the decimal 
+    // digits of the nth power of 5 in TABLE_POW5
     const TABLE: [u16; 65] = [
         0x0000, 0x0800, 0x0801, 0x0803, 0x1006, 0x1009, 0x100D, 0x1812, 0x1817, 0x181D, 0x2024,
         0x202B, 0x2033, 0x203C, 0x2846, 0x2850, 0x285B, 0x3067, 0x3073, 0x3080, 0x388E, 0x389C,
@@ -423,6 +512,15 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
         (1 << E) - 1
     }
 
+    fn max_decimal_power() -> i32 {
+        // Plus one to account for the fact that Decimal is formatted as 0.xxxeyyy
+        (((1 << E) - B) as f64 * 2.0_f64.log10()).ceil() as i32 + 1
+    }
+
+    fn min_decimal_power() -> i32 {
+        (-(B + M as i32) as f64 * 2.0_f64.log10()).floor() as i32
+    }
+
     const fn qnan(negative: bool) -> Self {
         Semb {
             m: (1_usize << (M - 1)) as u128,
@@ -463,7 +561,7 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
 
     // TODO: Is it correct to sub MINIMUM_EXPONENT for -B?
     // https://doc.rust-lang.org/src/core/num/dec2flt/slow.rs.html
-    fn parse_long_mantissa(s: &[u8]) -> Self {
+    fn parse_long_mantissa<T: std::ops::Shr<usize> + std::ops::Shl<usize> + FromDecimal>(s: &[u8]) -> Self {
         const MAX_SHIFT: usize = 60;
         const NUM_POWERS: usize = 19;
         const POWERS: [u8; 19] =
@@ -476,12 +574,14 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
         let fp_zero = Self::zero_pow2(0);
         let fp_inf = Self::zero_pow2(Self::infinite_power());
 
-        let mut d = parse_decimal(Self::max_digits(), s);
+        let mut d = Decimal::<T>::parse_decimal(Self::max_digits(), s);
 
         // Short-circuit if the value can only be a literal 0 or infinity.
-        if d.num_digits == 0 || d.decimal_point < -324 {
+        // if d.num_digits == 0 || d.decimal_point < -324 {
+            if d.num_digits == 0 || d.decimal_point < Self::min_decimal_power() {
             return fp_zero;
-        } else if d.decimal_point >= 310 {
+        // } else if d.decimal_point >= 310 {
+        } else if d.decimal_point >= Self::max_decimal_power() {
             return fp_inf;
         }
         let mut exp2 = 0_i32;
@@ -490,7 +590,8 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
             let n = d.decimal_point as usize;
             let shift = get_shift(n);
             d.right_shift(shift);
-            if d.decimal_point < -Decimal::DECIMAL_POINT_RANGE {
+            // println!("1: Right shifted by {}: {}", shift, d);
+            if d.decimal_point < -Decimal::<T>::DECIMAL_POINT_RANGE {
                 return fp_zero;
             }
             exp2 += shift as i32;
@@ -507,7 +608,8 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
                 get_shift((-d.decimal_point) as _)
             };
             d.left_shift(shift);
-            if d.decimal_point > Decimal::DECIMAL_POINT_RANGE {
+            // println!("2: Left shifted by {}: {}", shift, d);
+            if d.decimal_point > Decimal::<u128>::DECIMAL_POINT_RANGE {
                 return fp_inf;
             }
             exp2 -= shift as i32;
@@ -520,6 +622,7 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
                 n = MAX_SHIFT;
             }
             d.right_shift(n);
+            // println!("3: Right shifted by {}: {}", n, d);
             exp2 += n as i32;
         }
         if (exp2 - -B) >= Self::infinite_power() {
@@ -527,12 +630,24 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
         }
         // Shift the decimal to the hidden bit, and then round the value
         // to get the high mantissa+1 bits.
-        d.left_shift(M + 1);
-        let mut mantissa = d.round();
-        if mantissa >= (1_u64 << (M + 1)) {
+
+        // MAR
+        let mut current_shift = M + 1;
+        while current_shift > MAX_SHIFT {
+            d.left_shift(MAX_SHIFT);
+            // println!("4: Left shifted by {}: {}", MAX_SHIFT, d);
+            current_shift -= MAX_SHIFT;
+        }
+        d.left_shift(current_shift);
+        // println!("5: Left shifted by {}: {}", current_shift, d);
+        // /MAR
+        // d.left_shift(M + 1);
+        let mut mantissa: T = d.round();
+        if mantissa >= (<u8 as Into<T>>::into(1) << (M + 1)) {
             // Rounding up overflowed to the carry bit, need to
             // shift back to the hidden bit.
             d.right_shift(1);
+            // println!("6: Right shifted by {}: {}", 1, d);
             exp2 += 1;
             mantissa = d.round();
             if (exp2 - -B) >= Self::infinite_power() {
@@ -540,14 +655,15 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
             }
         }
         let mut power2 = exp2 - -B;
-        if mantissa < (1_u64 << M) {
+        if mantissa < (<u8 as Into<T>>::into(1) << M).into() {
             power2 -= 1;
         }
+
         // Zero out all the bits above the explicit mantissa bits.
-        mantissa &= (1_u64 << M) - 1;
+        mantissa &= (<u8 as Into<T>>::into(1) << M) - 1.into();
 
         Self {
-            m: mantissa as u128,
+            m: mantissa.into_u128(),
             e: power2 as i128,
             s: 0
         }
@@ -681,22 +797,306 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> FromStr for S
 
         match Self::parse_inf_nan(s, negative) {
             Some(f) => Ok(f),
-            None => Ok(Self::parse_long_mantissa(s))
+            None => Ok(Self::parse_long_mantissa::<u128>(s))
         }
     }
 }
 
+pub type SembF16 = Semb<1, 5, 10, 15>;
 pub type SembF32 = Semb<1, 8, 23, 127>;
 pub type SembF64 = Semb<1, 11, 52, 1023>;
+pub type SembF128 = Semb<1, 15, 112, 16383>;
 
 #[cfg(test)]
 mod semb_tests {
     use std::str::FromStr;
     use super::*;
+
+    #[test]
+    fn semb_f128_test() {
+        // f = (m / (2^112) + 1) * 2^(e - 16383)
+
+        // panic!("{}", SembF128::min_decimal_power());
+
+        // Largest number less than 1
+        let f = SembF128::from_str("0.9999999999999999999999999999999999037").unwrap();
+        assert_eq!(f.m, 0xffffffffffffffffffffffffffff);
+        assert_eq!(f.e, 0x3ffe);
+
+        // Smallest number larger than 1
+        let f = SembF128::from_str("1.0000000000000000000000000000000001926").unwrap();
+        assert_eq!(f.m, 0x0000000000000000000000000001);
+        assert_eq!(f.e, 0x3fff);
+
+        // Smallest number larger than 1
+        let f = SembF128::from_str("100000000000000000.00000000000000001926e-17").unwrap();
+        assert_eq!(f.m, 0x0000000000000000000000000001);
+        assert_eq!(f.e, 0x3fff);
+
+        // Largest normal number
+        let f = SembF128::from_str("1.1897314953572317650857593266280070162e4932").unwrap();
+        assert_eq!(f.m, 0xffffffffffffffffffffffffffff);
+        assert_eq!(f.e, 0x7ffe);
+
+        // Somewhat smallish normal number
+        let f = SembF128::from_str("3.3621031431120935062626778173217526026e-1000").unwrap();
+        assert_eq!(f.m, 3982282193971599414176888659273906);
+        assert_eq!(f.e, 13062);
+
+        // Very smallish normal number
+        let f = SembF128::from_str("3.3621031431120935062626778173217526026e-4931").unwrap();
+        assert_eq!(f.m, 1298074214633706907132624082305024);
+        assert_eq!(f.e, 4);
+
+        // Second smallest normal number
+        let f = SembF128::from_str("3.3621031431120935062626778173217532501e-4932").unwrap();
+        assert_eq!(f.m, 0x0000000000000000000000000001);
+        assert_eq!(f.e, 0x0001);
+
+        // Smallest normal number
+        let f = SembF128::from_str("3.3621031431120935062626778173217526026e-4932").unwrap();
+        assert_eq!(f.m, 0x0000000000000000000000000000);
+        assert_eq!(f.e, 0x0001);
+
+        // Halfway between the smallest and second smallest normal number (round down)
+        let s = "3.362103143112093506262677817321752926356835316747726786330775141191070324369195\
+            868777143190859275682714478912874792024110664675304224690934654568037596615558527\
+            720710612100920474398091699640084452218724266606548321708436395305484703786427374\
+            809489419091356696204323483265025882415538916845516454253413952077170215480026586\
+            346620716479045657017198906456701776021492537839651171762857011876463887001606498\
+            816316980482508771459313457671744756205918284923683484130792963720918539433437742\
+            364712271994448368165901582521947939760152739330283800384124799074590857330436018\
+            454938739011760238843517887132205176939981497944085853405680126274114241477783152\
+            618062002091230049784928064269872506839546487556465501607594144031244669616619036\
+            349368261108638067419688952942109562501282335771877983613919500375595843624134307\
+            697159017316349372630872594708666916290999444646073811198478941774053787401188064\
+            609282753674880887387101371168857728832500584400070076384803608662529965000587827\
+            575199204888000709134535890916983274104968947036691511095568487992484398307445203\
+            185237708899338193072335964290132943120071849556781855039427139191237321375410066\
+            859847278725494529869109913914736038298743491103216888506755416358577912094664305\
+            080081260781227592514748088678412864677866664010905196569384201693144040668167264\
+            091819709351015668523457271345089418506952234954755771713779010825804561455393642\
+            150511627020870635494634592754519264185011935479626298514891234004957230510112529\
+            878044766045825180668146333580916726113251953127142886427203896310385625679004858\
+            552417203471394316757221179955423307922856625964190120946198516434366868212672495\
+            895475275844299430782039747741673867370164074405135237670095042536008727867460738\
+            551407243123543005101291693106921117196291529057535364631332349035303382269044963\
+            210468775461029512947242913965279938995667948426276641020998595177402430404314326\
+            176994907667057468455622343598553781281183952627217915445984657879858928039681802\
+            660006997487755048154084449691268122176340603713114338811111455235581742205989607\
+            515456818859492935446673787055104983806828752e-4932";
+
+        let f = SembF128::from_str(s).unwrap();
+        assert_eq!(f.m, 0x0000000000000000000000000000);
+        assert_eq!(f.e, 0x0001);
+
+        // Halfway between the smallest and second smallest normal number (round up)
+        let s = "3.362103143112093506262677817321752926356835316747726786330775141191070324369195\
+            868777143190859275682714478912874792024110664675304224690934654568037596615558527\
+            720710612100920474398091699640084452218724266606548321708436395305484703786427374\
+            809489419091356696204323483265025882415538916845516454253413952077170215480026586\
+            346620716479045657017198906456701776021492537839651171762857011876463887001606498\
+            816316980482508771459313457671744756205918284923683484130792963720918539433437742\
+            364712271994448368165901582521947939760152739330283800384124799074590857330436018\
+            454938739011760238843517887132205176939981497944085853405680126274114241477783152\
+            618062002091230049784928064269872506839546487556465501607594144031244669616619036\
+            349368261108638067419688952942109562501282335771877983613919500375595843624134307\
+            697159017316349372630872594708666916290999444646073811198478941774053787401188064\
+            609282753674880887387101371168857728832500584400070076384803608662529965000587827\
+            575199204888000709134535890916983274104968947036691511095568487992484398307445203\
+            185237708899338193072335964290132943120071849556781855039427139191237321375410066\
+            859847278725494529869109913914736038298743491103216888506755416358577912094664305\
+            080081260781227592514748088678412864677866664010905196569384201693144040668167264\
+            091819709351015668523457271345089418506952234954755771713779010825804561455393642\
+            150511627020870635494634592754519264185011935479626298514891234004957230510112529\
+            878044766045825180668146333580916726113251953127142886427203896310385625679004858\
+            552417203471394316757221179955423307922856625964190120946198516434366868212672495\
+            895475275844299430782039747741673867370164074405135237670095042536008727867460738\
+            551407243123543005101291693106921117196291529057535364631332349035303382269044963\
+            210468775461029512947242913965279938995667948426276641020998595177402430404314326\
+            176994907667057468455622343598553781281183952627217915445984657879858928039681802\
+            660006997487755048154084449691268122176340603713114338811111455235581742205989607\
+            515456818859492935446673787055104983806828753e-4932";
+
+        let f = SembF128::from_str(s).unwrap();
+        assert_eq!(f.m, 0x0000000000000000000000000001);
+        assert_eq!(f.e, 0x0001);
+
+        // Middlish subnormal number
+        let f = SembF128::from_str("6.4751751194380251109244389582276465525e-4940").unwrap();
+        assert_eq!(f.m, 100000000000000000000000000);
+        assert_eq!(f.e, 0x0000);
+
+        // Smallest subnormal number
+        let f = SembF128::from_str("6.4751751194380251109244389582276465525e-4966").unwrap();
+        assert_eq!(f.m, 0x0000000000000000000000000001);
+        assert_eq!(f.e, 0x0000);
+
+        // Largest subnormal number
+        let f = SembF128::from_str("3.3621031431120935062626778173217519551e-4932").unwrap();
+        assert_eq!(f.m, 0xffffffffffffffffffffffffffff);
+        assert_eq!(f.e, 0x0000);
+
+        // Pi
+        let f = SembF128::from_str("3.1415926535897932384626433832795028841").unwrap();
+        assert_eq!(f.m, 0x921fb54442d18469898cc51701b8);
+        assert_eq!(f.e, 0x4000);
+        // panic!("m={}, e={}", f.m, f.e);
+    }
+
+    #[test]
+    fn semb_f16_test() {
+        // Smallest subnormal number
+        let f = SembF16::from_str("0.000000059604645").unwrap();
+        assert_eq!(f.m, 0b0000000001);
+        assert_eq!(f.e, 0b00000);
+
+        // Largest subnormal number
+        let f = SembF16::from_str("0.000060975552").unwrap();
+        assert_eq!(f.m, 0b1111111111);
+        assert_eq!(f.e, 0b00000);
+
+        // Smallest normal number
+        let f = SembF16::from_str("0.00006103515625").unwrap();
+        assert_eq!(f.m, 0b0000000000);
+        assert_eq!(f.e, 0b00001);
+
+        // 1/3
+        let f = SembF16::from_str("0.33333333").unwrap();
+        assert_eq!(f.m, 0b0101010101);
+        assert_eq!(f.e, 0b01101);
+
+        // Largest number less than 1
+        let f = SembF16::from_str("0.99951172").unwrap();
+        assert_eq!(f.m, 0b1111111111);
+        assert_eq!(f.e, 0b01110);
+
+        // 1
+        let f = SembF16::from_str("1").unwrap();
+        assert_eq!(f.m, 0b0000000000);
+        assert_eq!(f.e, 0b01111);
+
+        // Smallest number larger than 1
+        let f = SembF16::from_str("1.00097656").unwrap();
+        assert_eq!(f.m, 0b0000000001);
+        assert_eq!(f.e, 0b01111);
+
+        // Largest normal number
+        let f = SembF16::from_str("65504").unwrap();
+        assert_eq!(f.m, 0b1111111111);
+        assert_eq!(f.e, 0b11110);
+
+        // Round to infinity
+        // let f = SembF16::from_str("65510").unwrap();
+        // assert_eq!(f.m, 0b0);
+        // assert_eq!(f.e, 0b11111);
+    }
+
     #[test]
     fn semb_f64_test() {
         // Float 64
         assert_eq!(SembF64::max_digits(), 768);
+        assert_eq!(SembF64::max_decimal_power(), 310);
+        assert_eq!(SembF64::min_decimal_power(), -324);
+
+        let test_strings = vec![
+            "nan",
+            "-nan",
+            "inf",
+            "-inf",
+            "infinity",
+            "-infinity",
+            "0",
+            ".12345e-23",
+            ".12345",
+            "1.2345",
+            "123.45",
+            "123.45e+15",
+            "12345",
+            // https://github.com/rust-lang/rust/blob/master/src/etc/test-float-parse/src/validate/tests.rs
+            "1.00000005960464477539062499999",
+            "1.000000059604644775390625",
+            "1.00000005960464477539062500001",
+            "1.00000017881393432617187499999",
+            "1.000000178813934326171875",
+            "1.00000017881393432617187500001",
+            // Minimum positive subnormal value
+            "4.94065645841246544176568792868221372365059802614324764425585682500675507270208751865299836361635\
+            99237979656469544571773092665671035593979639877479601078187812630071319031140452784581716784898210\
+            36887186360569987307230500063874091535649843873124733972731696151400317153853980741262385655911710\
+            26658556686768187039560310624931945271591492455329305456544401127480129709999541931989409080416563\
+            32452475714786901472678015935523861155013480352649347201937902681071074917033322268447533357208324\
+            31936092382893458368060106011506169809753078342277318329247904982524730776375927247874656084778203\
+            73446969953364701797267771758512566055119913150489110145103786273816725095583738973359899366480994\
+            1164205702637090279242767544565229087538682506419718265533447265625e-324",
+            // Max subnormal
+            "2.2250738585072009e-308",
+            // Min normal
+            "2.2250738585072014e-308",
+            // Max double
+            "1.7976931348623157e308",
+            // Smallest number larger than 1 (1 + 2^-52)
+            "1.0000000000000002220446049250313080847263336181640625",
+            // 1 + 2^-51
+            "1.000000000000000444089209850062616169452667236328125",
+            // Larger than max double (round to infinity)
+            "1.7976931348623167e308",
+            "1.798e308",
+            "1.7976931348623157e310",
+
+        ];
+
+        for s in test_strings {
+            let semb = SembF64::from_str(s).unwrap();
+            let f = f64::from_str(s).unwrap();
+            assert_eq!(semb.to_f64().to_bits(), f.to_bits());
+        }
+
+        let test_pairs = vec![
+            ("100000005960464477539062499999", 0),
+            ("1000000059604644775390625", 0),
+            ("100000005960464477539062500001", 0),
+            ("100000017881393432617187499999", 0),
+            ("1000000178813934326171875", 0),
+            ("100000017881393432617187500001", 0),
+            // Max subnormal
+            ("22250738585072009", -308),
+            // Min normal
+            ("22250738585072014", -308),
+            // Max double
+            ("17976931348623157", 308),
+            // Smallest number larger than 1 (1 + 2^-52)
+            ("10000000000000002220446049250313080847263336181640625", 0_isize),
+            ("10000000000000002220446049250313080847263336181640625", 0_isize)
+        ];
+
+        for (m, e) in test_pairs {
+            let f = SembF64::from_str(&format!("0.{}e{}", m, e + 1)).unwrap();
+            for i in 0..100 {
+                let s = format!("0.{}{}e{}", "0".repeat(i), m, e + i as isize + 1);
+                // println!("{}", s);
+                let f2 = SembF64::from_str(&s).unwrap();
+                let f3 = f64::from_str(&s).unwrap(); 
+                assert!(f2.to_f64() == f3);
+                assert!(f.to_f64() == f2.to_f64());
+            }
+            for i in 0..m.len() {
+                let s = format!("{}.{}e{}", &m[..i], &m[i..], e - i as isize + 1);
+                // println!("{}", s);
+                let f2 = SembF64::from_str(&s).unwrap();
+                let f3 = f64::from_str(&s).unwrap(); 
+                assert!(f2.to_f64() == f3);
+                assert!(f.to_f64() == f2.to_f64());
+            }
+            for i in 0..100 {
+                let s = format!("{}{}e{}", m, "0".repeat(i), e - i as isize - m.len() as isize + 1);
+                // println!("{}", s);
+                let f2 = SembF64::from_str(&s).unwrap();
+                let f3 = f64::from_str(&s).unwrap(); 
+                assert!(f2.to_f64() == f3);
+                assert!(f.to_f64() == f2.to_f64());
+            }
+        }
 
         let fp = SembF64::from_str("nan").unwrap();
         let fp2 = f64::from_str("nan").unwrap();
@@ -705,46 +1105,14 @@ mod semb_tests {
         let fp = SembF64::from_str("-qnan").unwrap();
         let fp2 = f64::from_str("-nan").unwrap();
         assert_eq!(fp.to_f64().to_bits(), fp2.to_bits());
-
-        let fp = SembF64::from_str("infinity").unwrap();
-        let fp2 = f64::from_str("inf").unwrap();
-        assert_eq!(fp.to_f64().to_bits(), fp2.to_bits());
-
-        let fp = SembF64::from_str("-inf").unwrap();
-        let fp2 = f64::from_str("-inf").unwrap();
-        assert_eq!(fp.to_f64().to_bits(), fp2.to_bits());
-
-        let fp = SembF64::from_str("0").unwrap();
-        let fp2 = f64::from_str("0").unwrap();
-        assert_eq!(fp.to_f64(), fp2);
-
-        let fp = SembF64::from_str(".12345").unwrap();
-        let fp2 = f64::from_str(".12345").unwrap();
-        assert_eq!(fp.to_f64(), fp2);
-
-        let fp = SembF64::from_str(".12345e-23").unwrap();
-        let fp2 = f64::from_str(".12345e-23").unwrap();
-        assert_eq!(fp.to_f64(), fp2);
-
-        let fp = SembF64::from_str("1.2345").unwrap();
-        let fp2 = f64::from_str("1.2345").unwrap();
-        assert_eq!(fp.to_f64(), fp2);
-
-        let fp = SembF64::from_str("123.45").unwrap();
-        let fp2 = f64::from_str("123.45").unwrap();
-        assert_eq!(fp.to_f64(), fp2);
-
-        let fp = SembF64::from_str("12345").unwrap();
-        let fp2 = f64::from_str("12345").unwrap();
-        assert_eq!(fp.to_f64(), fp2);
-
-        let fp = SembF64::from_str("123.45e+15").unwrap();
-        let fp2 = f64::from_str("123.45e+15").unwrap();
-        assert_eq!(fp.to_f64(), fp2);
+        // panic!();
     }
 
     #[test]
     fn semb_f32_test() {
+
+        assert_eq!(SembF32::max_decimal_power(), 40);
+        assert_eq!(SembF32::min_decimal_power(), -46); // TODO: Should this be -44?
 
         let test_strings = vec![
             "nan",
@@ -770,8 +1138,8 @@ mod semb_tests {
         ];
 
         for s in test_strings {
-            let semb = SembF32::from_str("123.45").unwrap();
-            let f = f32::from_str("123.45").unwrap();
+            let semb = SembF32::from_str(s).unwrap();
+            let f = f32::from_str(s).unwrap();
             assert_eq!(semb.to_f32().to_bits(), f.to_bits());
         }
 
