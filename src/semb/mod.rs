@@ -2,6 +2,8 @@ use std::str::FromStr;
 
 use self::common::ByteSlice;
 use self::decimal::{FromDecimal, Decimal};
+use crate::{BitIndex, BitField};
+use crate::bit_field::FromBitField;
 
 mod common;
 mod decimal;
@@ -426,6 +428,33 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> PartialOrd fo
     }
 }
 
+impl<const S: usize, const E: usize, const M: usize, const B: i32> FromBitField for Semb<S, E, M, B> {
+
+    fn from_bf_be(bf: &BitField) -> Semb<S, E, M, B> {
+        let mut current = BitIndex::zero();
+        let mut next = current + BitIndex::bits(S);
+        let s_bf = bf.slice_be(&current, &next);
+        current = next;
+        next = current + BitIndex::bits(E);
+        let e_bf = bf.slice_be(&current, &next);
+        current = next;
+        next = current + BitIndex::bits(M);
+        let m_bf = bf.slice_be(&current, &next);
+
+        let s = u8::from_bf_be(&s_bf);
+        let e = i128::from_bf_be(&e_bf);
+        let m = u128::from_bf_be(&m_bf);
+
+        Semb{
+            s, e, m
+        }
+    }
+
+    fn from_bf_le(bf: &BitField) -> Semb<S, E, M, B> {
+        todo!()
+    }
+}
+
 #[derive(Clone, Debug)]
 enum ParseSembErrorKind {
     Empty,
@@ -640,6 +669,68 @@ mod semb_tests {
         let f1 = SembF32::from_str("-0.0").unwrap();
         let f2 = SembF32::from_str("0e10").unwrap();
         assert!(f1 == f2);
+    }
+
+    #[test]
+    fn semb_from_bf_test() {
+        // Float 64
+        assert_eq!(SembF64::max_digits(), 768);
+        assert_eq!(SembF64::max_decimal_power(), 310);
+        assert_eq!(SembF64::min_decimal_power(), -324);
+
+        let test_strings = vec![
+            "nan",
+            "-nan",
+            "inf",
+            "-inf",
+            "infinity",
+            "-infinity",
+            "0",
+            ".12345e-23",
+            ".12345",
+            "1.2345",
+            "123.45",
+            "123.45e+15",
+            "12345",
+            // https://github.com/rust-lang/rust/blob/master/src/etc/test-float-parse/src/validate/tests.rs
+            "1.00000005960464477539062499999",
+            "1.000000059604644775390625",
+            "1.00000005960464477539062500001",
+            "1.00000017881393432617187499999",
+            "1.000000178813934326171875",
+            "1.00000017881393432617187500001",
+            // Minimum positive subnormal value
+            "4.94065645841246544176568792868221372365059802614324764425585682500675507270208751865299836361635\
+            99237979656469544571773092665671035593979639877479601078187812630071319031140452784581716784898210\
+            36887186360569987307230500063874091535649843873124733972731696151400317153853980741262385655911710\
+            26658556686768187039560310624931945271591492455329305456544401127480129709999541931989409080416563\
+            32452475714786901472678015935523861155013480352649347201937902681071074917033322268447533357208324\
+            31936092382893458368060106011506169809753078342277318329247904982524730776375927247874656084778203\
+            73446969953364701797267771758512566055119913150489110145103786273816725095583738973359899366480994\
+            1164205702637090279242767544565229087538682506419718265533447265625e-324",
+            // Max subnormal
+            "2.2250738585072009e-308",
+            // Min normal
+            "2.2250738585072014e-308",
+            // Max double
+            "1.7976931348623157e308",
+            // Smallest number larger than 1 (1 + 2^-52)
+            "1.0000000000000002220446049250313080847263336181640625",
+            // 1 + 2^-51
+            "1.000000000000000444089209850062616169452667236328125",
+            // Larger than max double (round to infinity)
+            "1.7976931348623167e308",
+            "1.798e308",
+            "1.7976931348623157e310",
+
+        ];
+
+        for s in test_strings {
+            let semb1 = SembF64::from_str(s).unwrap();
+            let f = f64::from_str(s).unwrap();
+            let semb2 = SembF64::from_bf_be(&BitField::from_vec(f.to_be_bytes().to_vec()));
+            assert_eq!(semb2.to_f64().to_bits(), f.to_bits());
+        }
     }
 
     #[test]

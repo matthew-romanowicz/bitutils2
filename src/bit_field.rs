@@ -2309,6 +2309,63 @@ impl FromBitField for u8 {
     }
 }
 
+
+impl FromBitField for u128 {
+
+    fn from_bf_be(bf: &BitField) -> u128 {
+        let bits = BitIndex::bits(128);
+        let mut new_bf: BitField;
+        if bf.len() < bits {
+            new_bf = bf.clone();
+            new_bf.pad_unsigned_be(bits);
+        } else {
+            new_bf = bf.slice_be(&BitIndex::zero(), &bits);
+        }
+        u128::from_be_bytes(new_bf.into_array().unwrap())
+    }
+
+    fn from_bf_le(bf: &BitField) -> u128 {
+        let bits = BitIndex::bits(128);
+        let mut new_bf: BitField;
+        if bf.len() < bits {
+            new_bf = bf.clone();
+            new_bf.pad_unsigned_le(bits);
+        } else {
+            new_bf = bf.slice_be(&BitIndex::zero(), &bits);
+        }
+        u128::from_le_bytes(new_bf.into_array().unwrap())
+    }
+}
+
+impl FromBitField for i128 {
+
+    fn from_bf_be(bf: &BitField) -> i128 {
+        let bits = BitIndex::bits(128);
+        let mut new_bf: BitField;
+        if bf.len() < bits {
+            new_bf = bf.clone();
+            new_bf.pad_twos_compliment_be(bits);
+        } else {
+            new_bf = bf.slice_be(&BitIndex::zero(), &bits);
+        }
+        i128::from_be_bytes(new_bf.into_array().unwrap())
+    }
+
+    fn from_bf_le(bf: &BitField) -> i128 {
+        let bits = BitIndex::bits(128);
+        let mut new_bf: BitField;
+        if bf.len() < bits {
+            new_bf = bf.clone();
+            new_bf.pad_twos_compliment_le(bits);
+        } else {
+            new_bf = bf.slice_be(&BitIndex::zero(), &bits);
+        }
+        i128::from_le_bytes(new_bf.into_array().unwrap())
+    }
+}
+
+
+
 #[cfg(test)]
 mod bit_field_tests {
     use super::*;
