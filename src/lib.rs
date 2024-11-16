@@ -311,6 +311,26 @@ mod match_tests {
     }
 
     #[test]
+    fn f16_char_class() {
+        let v = vec![0b01100101, 0b01001110, 0b10010011, 0b11111111, 0b01010010, 0b00010011, 0b00010011];
+        assert_eq!(BinRegex::new("[>f16:1358]").unwrap().find(&v).unwrap().span(), (bx!(0, 0), bx!(2, 0)));
+        assert_eq!(BinRegex::new("[<f16:25.58]").unwrap().find(&v).unwrap().span(), (bx!(0, 0), bx!(2, 0)));
+        assert_eq!(BinRegex::new("[>f16:-3204]").unwrap().find(&v).unwrap().span(), (bx!(3, 5), bx!(5, 5)));
+        assert_eq!(BinRegex::new("[<f16:-0.04684448242]").unwrap().find(&v).unwrap().span(), (bx!(2, 7), bx!(4, 7)));
+        assert_eq!(BinRegex::new("[>f16:-inf..-50000]").unwrap().find(&v).unwrap().span(), (bx!(3, 3), bx!(5, 3)));
+        assert_eq!(BinRegex::new("[>f16:48.59375,1.2,-7.27176666259e-5]").unwrap().find(&v).unwrap().span(), (bx!(4, 0), bx!(6, 0)));
+        assert_eq!(BinRegex::new("[<f16:10..20].*[<f16:10..20]").unwrap().find(&v).unwrap().span(), (bx!(0, 7), bx!(6, 2)));
+        assert_eq!(BinRegex::new("[<f16:qnan]").unwrap().find(&v).unwrap().span(), (bx!(1, 5), bx!(3, 5)));
+        assert_eq!(BinRegex::new("[>f16:qnan]").unwrap().find(&v).unwrap().span(), (bx!(2, 5), bx!(4, 5)));
+        assert_eq!(BinRegex::new("[<f16:-qnan]").unwrap().find(&v).unwrap().span(), (bx!(1, 6), bx!(3, 6)));
+        assert_eq!(BinRegex::new("[>f16:-qnan]").unwrap().find(&v).unwrap().span(), (bx!(2, 6), bx!(4, 6)));
+        assert_eq!(BinRegex::new("[<f16:-snan]").unwrap().find(&v).unwrap().span(), (bx!(2, 2), bx!(4, 2)));
+        assert_eq!(BinRegex::new("[>f16:-snan]").unwrap().find(&v).unwrap().span(), (bx!(3, 2), bx!(5, 2)));
+        assert_eq!(BinRegex::new("[>f16:qnan,-qnan]").unwrap().find(&v).unwrap().span(), (bx!(2, 5), bx!(4, 5)));
+        assert_eq!(BinRegex::new("[>f16:-qnan,-snan]").unwrap().find(&v).unwrap().span(), (bx!(2, 6), bx!(4, 6)));
+    }
+
+    #[test]
     fn f32_char_class() {
         let v = vec![0b01100101, 0b01001110, 0b10010011, 0b11111111, 0b01010010, 0b00010011, 0b00010011];
         assert_eq!(BinRegex::new("[>f32:-1.450390125482823e+25]").unwrap().find(&v).unwrap().span(), (bx!(1, 4), bx!(5, 4)));

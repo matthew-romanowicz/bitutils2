@@ -8,6 +8,7 @@ use crate::bit_field::FromBitField;
 mod common;
 mod decimal;
 
+#[derive(Clone, Debug)]
 pub struct Semb<const S: usize, const E: usize, const M: usize, const B: i32> {
     m: u128, // Mantissa
     e: i128, // Biased exponent
@@ -451,7 +452,11 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> FromBitField 
     }
 
     fn from_bf_le(bf: &BitField) -> Semb<S, E, M, B> {
-        todo!()
+        // TODO: this could be more efficient
+        let bits = BitIndex::bits(S + E + M);
+        let mut new_bf = bf.slice_be(&BitIndex::zero(), &bits);
+        new_bf.swap_le_to_be();
+        Semb::from_bf_be(&new_bf)
     }
 }
 

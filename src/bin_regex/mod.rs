@@ -48,7 +48,16 @@
 //! [o8:1,2,3,4..10]  => 8-bit one's compliment integer
 //! [s8:1,2,3,4..10]  => 8-bit sign-magnitude integer
 //! [n8:1,2,3,4..10]  => 8-bit negabinary integer
+//! [f16:1,2,3,4..10]  => 16-bit floating point (IEEE-754 Half)
+//! [f32:1,2,3,4..10]  => 32-bit floating point (IEEE-754 Single)
+//! [f64:1,2,3,4..10]  => 64-bit floating point (IEEE-754 Double)
+//! [f128:1,2,3,4..10]  => 128-bit floating point (IEEE-754 Quadruple)
 //!</pre>
+//!
+//! Matches any set of `n` bits that is listed in the class expression when interpreted according to the character class flag.
+//!
+//! `a`: Values listed in the class expression are interpreted as ASCII
+//! `u`: Values listed in the class expression are interpreted as unsigned integers
 //!
 //! # Compositions
 //!<pre class="rust">
@@ -93,7 +102,10 @@ enum DynamicCharacterClass {
     OnesCompInt(CharClass<OnesCompInt>),
     SignMagInt(CharClass<SignMagInt>),
     NegaInt(CharClass<NegaInt>),
-    Float32(CharClass<Float32>)
+    Float16(CharClass<SembFloat<1, 5, 10, 15>>),
+    Float32(CharClass<SembFloat<1, 8, 23, 127>>),
+    Float64(CharClass<SembFloat<1, 11, 52, 1023>>),
+    Float128(CharClass<SembFloat<1, 15, 112, 16383>>)
 }
 
 impl DynamicCharacterClass {
@@ -104,7 +116,10 @@ impl DynamicCharacterClass {
             DynamicCharacterClass::OnesCompInt(cls) => cls.input_length(),
             DynamicCharacterClass::SignMagInt(cls) => cls.input_length(),
             DynamicCharacterClass::NegaInt(cls) => cls.input_length(),
+            DynamicCharacterClass::Float16(cls) => cls.input_length(),
             DynamicCharacterClass::Float32(cls) => cls.input_length(),
+            DynamicCharacterClass::Float64(cls) => cls.input_length(),
+            DynamicCharacterClass::Float128(cls) => cls.input_length(),
         }
     }
 
@@ -115,7 +130,10 @@ impl DynamicCharacterClass {
             DynamicCharacterClass::OnesCompInt(cls) => cls.matches(input),
             DynamicCharacterClass::SignMagInt(cls) => cls.matches(input),
             DynamicCharacterClass::NegaInt(cls) => cls.matches(input),
-            DynamicCharacterClass::Float32(cls) => cls.matches(input)
+            DynamicCharacterClass::Float16(cls) => cls.matches(input),
+            DynamicCharacterClass::Float32(cls) => cls.matches(input),
+            DynamicCharacterClass::Float64(cls) => cls.matches(input),
+            DynamicCharacterClass::Float128(cls) => cls.matches(input)
         }
     }
 }
@@ -548,6 +566,50 @@ impl std::cmp::PartialOrd for Float32 {
     }
 }
 
+use crate::Semb;
+#[derive(Clone, Debug)]
+struct SembFloat<const S: usize, const E: usize, const M: usize, const B: i32>(Semb<S, E, M, B>);
+
+impl<const S: usize, const E: usize, const M: usize, const B: i32> FromBitField for SembFloat<S, E, M, B> {
+    fn from_bf_be(bf: &BitField) -> SembFloat<S, E, M, B> {
+        SembFloat(Semb::from_bf_be(bf))
+    }
+
+    fn from_bf_le(bf: &BitField) -> SembFloat<S, E, M, B> {
+        SembFloat(Semb::from_bf_le(bf))
+    }
+}
+
+impl<const S: usize, const E: usize, const M: usize, const B: i32> std::hash::Hash for SembFloat<S, E, M, B> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.canonical_form().hash(state);
+    }
+}
+
+impl<const S: usize, const E: usize, const M: usize, const B: i32> PartialEq for SembFloat<S, E, M, B> {
+    fn eq(&self, other: &SembFloat<S, E, M, B>) -> bool {
+        self.0.canonical_form() == other.0.canonical_form()
+    }
+}
+
+impl<const S: usize, const E: usize, const M: usize, const B: i32> std::cmp::Eq for SembFloat<S, E, M, B> {}
+
+
+impl<const S: usize, const E: usize, const M: usize, const B: i32> std::str::FromStr for SembFloat<S, E, M, B> {
+    type Err = crate::semb::ParseSembError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(SembFloat(Semb::from_str(s)?))
+        
+    }
+}
+
+impl<const S: usize, const E: usize, const M: usize, const B: i32> std::cmp::PartialOrd for SembFloat<S, E, M, B> {
+    fn partial_cmp(&self, other: &SembFloat<S, E, M, B>) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
 #[derive(PartialEq, Eq, Debug)]
 enum Endian {
     Big,
@@ -867,13 +929,48 @@ fn parse_char_class(input: &Vec<char>) -> Result<Token, String> {
                                 }
                             },
                             'f' => {
-                                let cls_result = parse_num_char_class::<Float32>(&input[i+1..].to_vec(), n, endian);
-                                match cls_result {
-                                    Ok(cls) => {
-                                        return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::Float32(cls))))
+                                match n {
+                                    16 => {
+                                        let cls_result = parse_num_char_class::<SembFloat<1, 5, 10, 15>>(&input[i+1..].to_vec(), n, endian);
+                                        match cls_result {
+                                            Ok(cls) => {
+                                                return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::Float16(cls))))
+                                            },
+                                            Err(msg) => return Err(msg)
+                                        }
                                     },
-                                    Err(msg) => return Err(msg)
+                                    32 => {
+                                        let cls_result = parse_num_char_class::<SembFloat<1, 8, 23, 127>>(&input[i+1..].to_vec(), n, endian);
+                                        match cls_result {
+                                            Ok(cls) => {
+                                                return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::Float32(cls))))
+                                            },
+                                            Err(msg) => return Err(msg)
+                                        }
+                                    },
+                                    64 => {
+                                        let cls_result = parse_num_char_class::<SembFloat<1, 11, 52, 1023>>(&input[i+1..].to_vec(), n, endian);
+                                        match cls_result {
+                                            Ok(cls) => {
+                                                return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::Float64(cls))))
+                                            },
+                                            Err(msg) => return Err(msg)
+                                        }
+                                    },
+                                    128 => {
+                                        let cls_result = parse_num_char_class::<SembFloat<1, 15, 112, 16383>>(&input[i+1..].to_vec(), n, endian);
+                                        match cls_result {
+                                            Ok(cls) => {
+                                                return Ok(Token::CharacterClass(std::rc::Rc::new(DynamicCharacterClass::Float128(cls))))
+                                            },
+                                            Err(msg) => return Err(msg)
+                                        }
+                                    },
+                                    _ => {
+                                        return Err(format!("{}-bit float format not recognized", n))
+                                    }
                                 }
+                                
                             },
                             _ => return Err(format!("Character class type '{}' not recognized", from_start.iter().collect::<String>()))
                         }
