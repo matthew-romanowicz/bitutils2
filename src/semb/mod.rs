@@ -77,11 +77,11 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
     }
 
     #[inline]
-    pub const fn zero_pow2(e: i32) -> Self {
+    const fn zero_pow2(e: i32) -> Self {
         Self { m: 0, e: e as i128, s: 0}
     }
 
-    /// Returns `true` is `self` is NaN.
+    /// Returns `true` if `self` is NaN.
     /// # Examples
     ///```rust
     /// use std::str::FromStr;
@@ -107,7 +107,7 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
         self.e == Self::infinite_power() as i128 && self.m != 0
     }
 
-    /// Returns `true` is `self` is infinite.
+    /// Returns `true` if `self` is infinite.
     /// # Examples
     ///```rust
     /// use std::str::FromStr;
@@ -133,7 +133,7 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
         self.e == Self::infinite_power() as i128 && self.m == 0
     }
 
-    /// Returns `true` is `self` is not infinite or NaN.
+    /// Returns `true` if `self` is not infinite or NaN.
     /// # Examples
     ///```rust
     /// use std::str::FromStr;
@@ -185,7 +185,6 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
         }
     }
 
-    // TODO: Is it correct to sub MINIMUM_EXPONENT for -B?
     // https://doc.rust-lang.org/src/core/num/dec2flt/slow.rs.html
     fn parse_long_mantissa<T: std::ops::Shr<usize> + std::ops::Shl<usize> + FromDecimal>(s: &[u8], negative: bool) -> Self {
         const MAX_SHIFT: usize = 60;
@@ -235,7 +234,7 @@ impl<const S: usize, const E: usize, const M: usize, const B: i32> Semb<S, E, M,
             };
             d.left_shift(shift);
             // println!("2: Left shifted by {}: {}", shift, d);
-            if d.decimal_point > Decimal::<u128>::DECIMAL_POINT_RANGE {
+            if d.decimal_point > Decimal::<T>::DECIMAL_POINT_RANGE {
                 return fp_inf;
             }
             exp2 -= shift as i32;
@@ -548,34 +547,34 @@ mod semb_tests {
         let f2 = SembF32::from_str("-200e5").unwrap();
         let f3 = SembF32::from_str("-100e5").unwrap();
         let f4 = SembF32::from_str("-3.140625").unwrap();
-        let f4 = SembF32::from_str("-2.0").unwrap();
-        let f5 = SembF32::from_str("-1.0").unwrap();
+        let f5 = SembF32::from_str("-2.0").unwrap();
+        let f6 = SembF32::from_str("-1.0").unwrap();
 
         // Negative subnormal numbers
-        let f6 = SembF32::from_str("-3.0e-30").unwrap();
-        let f7 = SembF32::from_str("-1.5e-30").unwrap();
-        let f8 = SembF32::from_str("-1.5e-40").unwrap();
+        let f7 = SembF32::from_str("-3.0e-30").unwrap();
+        let f8 = SembF32::from_str("-1.5e-30").unwrap();
+        let f9 = SembF32::from_str("-1.5e-40").unwrap();
 
         // Zero
-        let f9 = SembF32::from_str("0.0").unwrap();
+        let f10 = SembF32::from_str("0.0").unwrap();
 
         // Positive subnormal numbers
-        let f10 = SembF32::from_str("1.5e-40").unwrap();
-        let f11 = SembF32::from_str("1.5e-30").unwrap();
-        let f12 = SembF32::from_str("3.0e-30").unwrap();
+        let f11 = SembF32::from_str("1.5e-40").unwrap();
+        let f12 = SembF32::from_str("1.5e-30").unwrap();
+        let f13 = SembF32::from_str("3.0e-30").unwrap();
 
         // Positive normal numbers
-        let f13 = SembF32::from_str("1.0").unwrap();
-        let f14 = SembF32::from_str("2.0").unwrap();
-        let f15 = SembF32::from_str("3.140625").unwrap();
-        let f16 = SembF32::from_str("100e5").unwrap();
-        let f17 = SembF32::from_str("200e5").unwrap();
+        let f14 = SembF32::from_str("1.0").unwrap();
+        let f15 = SembF32::from_str("2.0").unwrap();
+        let f16 = SembF32::from_str("3.140625").unwrap();
+        let f17 = SembF32::from_str("100e5").unwrap();
+        let f18 = SembF32::from_str("200e5").unwrap();
 
         // Positive infinity
-        let f18 = SembF32::from_str("inf").unwrap();
+        let f19 = SembF32::from_str("inf").unwrap();
 
         let nums = vec![
-            f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18
+            f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19
         ];
 
         let pos_qnan = SembF32::from_str("nan").unwrap();
@@ -734,6 +733,7 @@ mod semb_tests {
             let semb1 = SembF64::from_str(s).unwrap();
             let f = f64::from_str(s).unwrap();
             let semb2 = SembF64::from_bf_be(&BitField::from_vec(f.to_be_bytes().to_vec()));
+            assert_eq!(semb1.to_f64().to_bits(), f.to_bits());
             assert_eq!(semb2.to_f64().to_bits(), f.to_bits());
         }
     }

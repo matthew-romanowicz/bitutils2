@@ -1121,15 +1121,15 @@ fn get_direct_transitions(fsm: &Vec<Vec<(usize, StateTransition, Vec<StateFlag>)
     let mut sum_flags = Vec::<Vec<StateFlag>>::new();
     let mut t_index = 0;
     let final_depth = fsm.len();
-    println!("Processing state {}", state);
+    // println!("Processing state {}", state);
     loop {
         let mut transitions = &fsm[explorer_state];
-        println!("{} {:?}", t_index, path);
+        // println!("{} {:?}", t_index, path);
         while t_index >= transitions.len() { // If we're out of transitions, start backtracking
             sum_flags.pop();
             match path.pop() {
                 Some((dest, i)) => {
-                    println!("Backtracking");
+                    // println!("Backtracking");
                     explorer_state = dest;
                     transitions = &fsm[explorer_state];
                     t_index = i;
@@ -1139,7 +1139,7 @@ fn get_direct_transitions(fsm: &Vec<Vec<(usize, StateTransition, Vec<StateFlag>)
         }
         match &transitions[t_index] {
             (dest, StateTransition::Free, flags) if *dest != final_depth => { // If it's a free transition, go deeper
-                println!("\tDeeper to state {}", dest);
+                // println!("\tDeeper to state {}", dest);
                 if path.contains(&(explorer_state, t_index + 1)) {
                     t_index += 1;
                     continue // If the path takes a loop, leave that option out of the final list.
@@ -1151,7 +1151,7 @@ fn get_direct_transitions(fsm: &Vec<Vec<(usize, StateTransition, Vec<StateFlag>)
                 continue
             },
             (dest, t, final_flags) => { // If it's not a free transition, record it
-                println!("\tRecording state transition {} {}", state, t_index);
+                // println!("\tRecording state transition {} {}", state, t_index);
                 let mut new_flags = Vec::<StateFlag>::new();
                 for flags in &sum_flags {
                     new_flags.extend(flags.to_vec());
@@ -1202,7 +1202,7 @@ fn optimize(fsm: &mut Vec<Vec<(usize, StateTransition, Vec<StateFlag>)>>) {
         fsm[state] = new_transitions;
     }
 
-    println!("{:?}", fsm);
+    // println!("{:?}", fsm);
 
     remove_dead_states(fsm);
 
@@ -1744,7 +1744,7 @@ impl<'a, T: BitIndexable> CapturePathGenerator<'a, T> {
                             let end = self.current_offset + n;
                             if end <= self.max_offset {
                                 let bf = self.input.bit_slice(&self.current_offset, &end);
-                                println!("{:?}, {}", bf, cls.matches(&bf));
+                                // println!("{:?}, {}", bf, cls.matches(&bf));
                                 if cls.matches(&bf) {
                                     self.current_path.push((self.current_state, self.t_index, self.current_offset));
                                     self.current_state = *dest;
@@ -1785,12 +1785,12 @@ impl BinRegex {
         let n_groups = n_groups + 1;
         let mut fsm = compile(&tokens, 0);
         optimize(&mut fsm);
-        println!("{:?}", groups_map);
+        // println!("{:?}", groups_map);
         Ok(BinRegex {fsm, n_groups, groups_map})
     }
 
 
-    fn match_path<'a, T>(&'a self, input: &'a T) -> Option<(Vec::<(usize, usize, BitIndex)>, BitIndex)> 
+    fn match_path<'a, T>(&self, input: &'a T) -> Option<(Vec::<(usize, usize, BitIndex)>, BitIndex)> 
     where &'a T: BitIndexable {
         let mut gen = CapturePathGenerator::new(&self.fsm, &input);
         match gen.next() {
@@ -1868,11 +1868,14 @@ impl BinRegex {
         }
     }
 
+    /// This routine searches for the first match of this regex in the input given, and if found, 
+    /// returns not only the overall match but also the matches of each capture group in the 
+    /// expression. If no match is found, then `None` is returned.
     pub fn captures<'a, T>(&'a self, input: &'a T) -> Option<BinCaptures<T>> 
     where &'a T: BitIndexable, T: BitIndexable {
         match self.match_path(input) {
             Some((mut path, offset)) => {
-                println!("{:?}",path);
+                // println!("{:?}",path);
                 let mut groups = Vec::<Option<BinMatch<T>>>::new();
                 for _ in 0..self.n_groups {
                     groups.push(None);
@@ -1882,7 +1885,7 @@ impl BinRegex {
                 path.reverse();
                 for (state, t_index, offset) in path {
                     let mut flags = self.fsm[state][t_index].2.to_vec();
-                    println!("{:?}", flags);
+                    // println!("{:?}", flags);
                     flags.reverse();
                     for flag in flags {
                         match flag {
