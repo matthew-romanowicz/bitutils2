@@ -231,7 +231,7 @@ impl FromBitField for UInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_be(BitIndex::bits(128));
         } else if n < 128 {
             bf.pad_unsigned_be(BitIndex::bits(128));
         }
@@ -243,7 +243,7 @@ impl FromBitField for UInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_le(BitIndex::bits(128));
         } else if n < 128 {
             bf.pad_unsigned_le(BitIndex::bits(128));
         }
@@ -274,7 +274,7 @@ impl FromBitField for TwosCompInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_be(BitIndex::bits(128));
         } else if n < 128 {
             bf.pad_twos_compliment_be(BitIndex::bits(128));
         }
@@ -286,7 +286,7 @@ impl FromBitField for TwosCompInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_le(BitIndex::bits(128));
         } else if n < 128 {
             bf.pad_twos_compliment_le(BitIndex::bits(128));
         }
@@ -317,7 +317,7 @@ impl FromBitField for OnesCompInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_be(BitIndex::bits(128));
         } else if n < 128 {
             // Two's compliment padding and one's compliment padding are the same
             bf.pad_twos_compliment_be(BitIndex::bits(128));
@@ -335,7 +335,7 @@ impl FromBitField for OnesCompInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_le(BitIndex::bits(128));
         } else if n < 128 {
             // Two's compliment padding and one's compliment padding are the same
             bf.pad_twos_compliment_le(BitIndex::bits(128));
@@ -372,7 +372,7 @@ impl FromBitField for SignMagInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_be(BitIndex::bits(128));
         } else if n < 128 {
             bf.pad_sign_magnitude_be(BitIndex::bits(128));
         }
@@ -389,7 +389,7 @@ impl FromBitField for SignMagInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_le(BitIndex::bits(128));
         } else if n < 128 {
             bf.pad_sign_magnitude_le(BitIndex::bits(128));
         }
@@ -425,7 +425,7 @@ impl FromBitField for NegaInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_be(BitIndex::bits(128));
         } else if n < 128 {
             // Unsigned padding and negabinary padding are the same
             bf.pad_unsigned_be(BitIndex::bits(128));
@@ -443,7 +443,7 @@ impl FromBitField for NegaInt {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 128 {
-            bf.truncate(BitIndex::bits(128));
+            bf.truncate_le(BitIndex::bits(128));
         } else if n < 128 {
             // Unsigned padding and negabinary padding are the same
             bf.pad_unsigned_le(BitIndex::bits(128));
@@ -497,7 +497,7 @@ impl FromBitField for Float32 {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 32 {
-            bf.truncate(BitIndex::bits(32));
+            bf.truncate_be(BitIndex::bits(32));
         } else if n < 32 {
             panic!("Float 32 cannot be formed from a BitField with length {}", bf.len())
         }
@@ -509,7 +509,7 @@ impl FromBitField for Float32 {
         let mut bf = bf.clone();
         let n = bf.len().total_bits();
         if n > 32 {
-            bf.truncate(BitIndex::bits(32));
+            bf.truncate_le(BitIndex::bits(32));
         } else if n < 32 {
             panic!("Float 32 cannot be formed from a BitField with length {}", bf.len())
         }

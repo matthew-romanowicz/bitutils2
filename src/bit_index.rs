@@ -357,6 +357,11 @@ impl BitIndex {
     }
 }
 
+impl Default for BitIndex {
+    fn default() -> BitIndex {
+        BitIndex::zero()
+    }
+}
 
 impl FromStr for BitIndex {
     type Err = ParseBitIndexError;

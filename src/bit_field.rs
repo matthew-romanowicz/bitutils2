@@ -355,10 +355,7 @@ impl BitField {
     /// the current length. Does nothing otherwise.
     ///
     /// Panics if `new_length` is negative.
-    pub fn truncate(&mut self, new_length: BitIndex) {
-        if new_length.is_negative() {
-            panic!("Negative length supplied to BitField::truncate: {}", new_length)
-        }
+    fn truncate(&mut self, new_length: BitIndex, be: bool) {
         if self.length <= new_length {
             return
         }
@@ -366,50 +363,222 @@ impl BitField {
             self.v.truncate(new_length.byte());
         } else {
             self.v.truncate(new_length.byte() + 1);
-            let last = (self.v[new_length.byte()] >> new_length.cbit()) << new_length.cbit();
+
+            // Take the MS bits if in big-endian and the LS bits if little-endian
+            let last = if be {
+                (self.v[new_length.byte()] >> new_length.cbit()) << new_length.cbit()
+            } else if new_length.byte() != self.length.byte() {
+                // Full byte is valid, so take the required LS bits
+                self.v[new_length.byte()] << new_length.cbit()
+            } else {
+                // Only part of the byte is valid, so need to shift the bits over
+                // to the LS position before taking the required bits
+                (self.v[new_length.byte()] >> self.length.cbit()) << new_length.cbit()
+            };
+
             self.v[new_length.byte()] = last;
         }
         self.length = new_length;
     }
 
+    /// Truncates the [`BitField`](crate::BitField) to `new_length` by retaining the 
+    /// most-significant bits assuming a big-endian byte order if `new_length` is 
+    /// shorter than the current length. Does nothing otherwise.
+    ///
+    /// Equivalent to [`truncate_le`](crate::BitField::truncate_le) if `new_length` is
+    /// on a byte boundary.
+    ///
+    /// Panics if `new_length` is negative.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_bin_str("0101 1100 1111 0000 1010 1100");
+    /// //         Most significant 2B6b ->  ---- ---- ---- ---- ---- --
+    /// bf.truncate_be(BitIndex::new(2, 6));
+    ///
+    /// assert_eq!(bf, BitField::from_bin_str("0101 1100 1111 0000 1010 11"));
+    /// //           Most significant 2B3b ->  ---- ---- ---- ---- ---
+    /// bf.truncate_be(BitIndex::new(2, 3));
+    ///
+    /// assert_eq!(bf, BitField::from_bin_str("0101 1100 1111 0000 101"));
+    /// //           Most significant 0B4b ->  ----
+    /// bf.truncate_be(BitIndex::new(0, 4));
+    ///
+    /// assert_eq!(bf, BitField::from_bin_str("0101"));
+    ///
+    /// // Does nothing if new_length >= length
+    /// bf.truncate_be(BitIndex::new(1, 4));
+    /// assert_eq!(bf, BitField::from_bin_str("0101"));
+    ///```
+    pub fn truncate_be(&mut self, new_length: BitIndex) {
+        if new_length.is_negative() {
+            panic!("Negative length supplied to BitField::truncate_be: {}", new_length)
+        }
+        self.truncate(new_length, true);
+    }
+
+    /// Truncates the [`BitField`](crate::BitField) to `new_length` by retaining the 
+    /// least-significant bits assuming a little-endian byte order if `new_length` is 
+    /// shorter than the current length. Does nothing otherwise.
+    ///
+    /// Equivalent to [`truncate_be`](crate::BitField::truncate_be) if `new_length` is
+    /// on a byte boundary.
+    ///
+    /// Panics if `new_length` is negative.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf = BitField::from_bin_str("0101 1100 1111 0000 1010 1100");
+    /// //        Least significant 2B6b ->  ---- ---- ---- ----   -- ----
+    /// bf.truncate_le(BitIndex::new(2, 6));
+    ///
+    /// assert_eq!(bf, BitField::from_bin_str("0101 1100 1111 0000 1011 00"));
+    /// //          Least significant 2B3b ->  ---- ---- ---- ----    - --
+    /// bf.truncate_le(BitIndex::new(2, 3));
+    ///
+    /// assert_eq!(bf, BitField::from_bin_str("0101 1100 1111 0000 100"));
+    /// //               Least significant 0B4b ->  ----
+    /// bf.truncate_le(BitIndex::new(0, 4));
+    ///
+    /// assert_eq!(bf, BitField::from_bin_str("1100"));
+    ///
+    /// // Does nothing if new_length >= length
+    /// bf.truncate_le(BitIndex::new(1, 4));
+    /// assert_eq!(bf, BitField::from_bin_str("1100"));
+    ///```
+    pub fn truncate_le(&mut self, new_length: BitIndex) {
+        if new_length.is_negative() {
+            panic!("Negative length supplied to BitField::truncate_le: {}", new_length)
+        }
+        self.truncate(new_length, false);
+    }
+
     /// Concatenates the argument onto the end of the [`BitField`](crate::BitField), adjusting the 
     /// length of the [`BitField`](crate::BitField) accordingly.
-    pub fn extend(&mut self, other: &BitField) {
+    pub fn extend(&mut self, other: &BitField, be: bool) {
+        let new_length = self.length + other.length;
+
         if other.is_empty() {
             // Do nothing
         } else if self.length.is_byte_boundary() {
             self.v.extend(other.v.clone());
         } else {
             let cbit = self.length.cbit();
-            self.v[self.length.byte()] |= other.v[0] >> self.length.bit();
-            let mut carry = other.v[0] << cbit;
-            let end = if other.length.is_byte_boundary() {other.length.byte()} else {other.length.byte() + 1};
-            for i in 1..end {
-                self.v.push((other.v[i] >> self.length.bit()) | carry);
-                carry = other.v[i] << cbit;
+
+            let mut carry = self.v.pop().unwrap();
+
+            if be {
+                for b in other.iter_bytes(true) {
+                    self.v.push((b >> self.length.bit()) | carry);
+                    carry = b << cbit;
+                }
+            } else {
+                carry >>= cbit;
+                for b in other.iter_bytes(false) {
+                    self.v.push((b << self.length.bit()) | carry);
+                    carry = b >> cbit;
+                }
             }
-            if (self.length.bit() + other.length.bit() > 8) || other.length.is_byte_boundary() {
+            if new_length.ceil().byte() > self.v.len() {
                 self.v.push(carry);
             }
+
+            // Shift the bits in the last byte into the MSB position
+            if !be {
+                if let Some(last) = self.v.last_mut() {
+                    let total_cbit = new_length.cbit() % 8;
+                    *last <<= total_cbit;
+                }
+            }
+            
         
         }
-        self.length += other.length;
+        self.length = new_length;
+    }
+
+    /// Iterates over the bytes of a [`BitField`](crate::BitField), from the least
+    /// significant to the most significant assuming little endian byte order. 
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let bf1 = BitField::from_bin_str("0101 1100 11");
+    /// let mut i = bf1.iter_bytes(false);
+    /// assert_eq!(i.next(), Some(0b01011100));
+    /// assert_eq!(i.next(), Some(0b11));
+    /// assert_eq!(i.next(), None);
+    ///```
+    pub fn iter_bytes(&self, ms: bool) -> Box<dyn Iterator<Item = u8> + '_> {
+        if self.length.is_byte_boundary() || ms {
+            Box::new(self.v.iter().cloned())
+        } else {
+            // Shift the last byte into the LS position
+            let cbit = self.length.cbit();
+            let n = self.length.byte();
+            Box::new(self.v.iter().take(n).cloned().chain(std::iter::once(self.v[n] >> cbit)))
+        }
+    }
+
+    /// Concatenates the argument onto the end of the [`BitField`](crate::BitField), adjusting the 
+    /// length of the [`BitField`](crate::BitField) accordingly.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf1 = BitField::from_bin_str("0101 1100 11");
+    /// bf1.extend_be(&BitField::from_bin_str("0011 1010 0001"));
+    /// assert_eq!(bf1, BitField::from_bin_str("0101 1100 1100 1110 1000 01"));
+    ///```
+    pub fn extend_be(&mut self, other: &BitField) {
+        self.extend(other, true);
+    }
+
+    /// Concatenates the argument onto the end of the [`BitField`](crate::BitField), adjusting the 
+    /// length of the [`BitField`](crate::BitField) accordingly.
+    ///
+    /// # Examples
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    ///
+    /// let mut bf1 = BitField::from_bin_str("0101 1100 11");
+    /// //                                    OPQR STUV MN
+    /// bf1.extend_le(&BitField::from_bin_str("0011 1010 0001"));
+    /// //                                     EFGH IJKL ABCD
+    /// assert_eq!(bf1, BitField::from_bin_str("0101 1100 1110 1011 0001 00"));
+    /// //                                      OPQR STUV GHIJ KLMN ABCD EF
+    ///```
+    pub fn extend_le(&mut self, other: &BitField) {
+        self.extend(other, false)
     }
 
     /// Repeats a [`BitField`](crate::BitField) `n` times. If `n` is zero, the bitfield is cleared and if `n` is one, the bitfield
     /// is unmodified. Otherwise, the bitfield is extended such that it's contents repeat `n` times and its
     /// length is multiplied by `n`.
-    pub fn repeat(&mut self, n: usize) {
+    fn repeat(&mut self, n: usize, be: bool) {
         match n {
             0 => self.clear(),
             1 => (),
             _ => {
                 let extra = self.clone();
                 for _ in 0..(n - 1) {
-                    self.extend(&extra);
+                    self.extend(&extra, be);
                 }
             }
         }
+    }
+
+    pub fn repeat_be(&mut self, n: usize) {
+        self.repeat(n, true)
+    }
+
+    pub fn repeat_le(&mut self, n: usize) {
+        self.repeat(n, false)
     }
 
     /// Extends `self` to the new provided length by repeating as many times as needed to fill the new length. Final repetition is
@@ -417,31 +586,45 @@ impl BitField {
     /// to the new length.
     ///
     /// # Panics
-    /// Panics if the provided length is negative or if `self` is empty.
+    /// Panics if the provided length is negative or if `self` is empty
     ///
     /// # Examples
     ///```rust
     /// use bitutils2::{BitField, BitIndex};
     ///
     /// let mut bf = BitField::from_bin_str("0101 1100 11");
-    /// bf.repeat_until(BitIndex::new(5, 4));
+    /// bf.repeat_until_be(BitIndex::new(5, 4));
     /// assert_eq!(bf, BitField::from_bin_str("0101 1100 1101 0111 0011 0101 1100 1101 0111 0011 0101"));
     ///
     /// // If the new length is less than the current length, then self is truncated.
-    /// bf.repeat_until(BitIndex::new(0, 6));
+    /// bf.repeat_until_be(BitIndex::new(0, 6));
     /// assert_eq!(bf, BitField::from_bin_str("0101 11"));
     ///```
-    pub fn repeat_until(&mut self, new_length: BitIndex) {
+    pub fn repeat_until_be(&mut self, new_length: BitIndex) {
         if new_length.is_negative() {
-            panic!("Negative length supplied to BitField::repeat_until: {}", new_length);
+            panic!("Negative length supplied to BitField::repeat_until_be: {}", new_length);
         }
         if self.is_empty() {
-            panic!("BitField::repeat_until called on empty BitField")
+            panic!("BitField::repeat_until_be called on empty BitField")
         }
         let n = new_length / &self.length;
         
-        self.repeat(n as usize + 1);
-        self.truncate(new_length);
+        self.repeat_be(n as usize + 1);
+        self.truncate_be(new_length);
+        
+    }
+
+    pub fn repeat_until_le(&mut self, new_length: BitIndex) {
+        if new_length.is_negative() {
+            panic!("Negative length supplied to BitField::repeat_until_le: {}", new_length);
+        }
+        if self.is_empty() {
+            panic!("BitField::repeat_until_le called on empty BitField")
+        }
+        let n = new_length / &self.length;
+        
+        self.repeat_le(n as usize + 1);
+        self.truncate_le(new_length);
         
     }
 
@@ -541,8 +724,8 @@ impl BitField {
     pub fn shove_left(&mut self, new: &BitField) {
         if new.len() < self.len() {
             *self <<= new.len();
-            self.truncate(self.len() - new.len());
-            self.extend(new);
+            self.truncate_be(self.len() - new.len());
+            self.extend_be(new);
         } else if new.len() > self.len() {
             *self = new.bit_slice(&(new.len() - self.len()), &new.len());
         } else {
@@ -575,11 +758,11 @@ impl BitField {
     ///```
     pub fn shove_right(&mut self, mut new: BitField) {
         if new.len() < self.len() {
-            self.truncate(self.len() - new.len());
+            self.truncate_be(self.len() - new.len());
             std::mem::swap(self, &mut new);
-            self.extend(&new);
+            self.extend_be(&new);
         } else if new.len() > self.len() {
-            new.truncate(self.len());
+            new.truncate_be(self.len());
             std::mem::swap(self, &mut new);
         } else {
             *self = new;
@@ -626,7 +809,7 @@ impl BitField {
                 pad.bit_field(end - start)
             } else {
                 let mut slice = self.bit_slice(start, &self.len());
-                slice.extend(&pad.bit_field(end - &self.len()));
+                slice.extend_be(&pad.bit_field(end - &self.len()));
                 slice
             }
         } else {
@@ -689,7 +872,7 @@ impl BitField {
                 lpad.bit_field(end - start)
             } else {
                 let mut slice = lpad.bit_field(start.abs());
-                slice.extend(&self.slice_with_rpad(&BitIndex::zero(), end, rpad));
+                slice.extend_be(&self.slice_with_rpad(&BitIndex::zero(), end, rpad));
                 slice
             }
             
@@ -896,7 +1079,7 @@ impl BitField {
         if self.length.byte() == 0 {
             // TODO: This is a stupid implementation
             let mut r = self.clone();
-            r.repeat(8);
+            r.repeat_be(8);
             return r.extract_u8_cyclical(start)
         }
         let start = start.rem_euclid(&self.length);
@@ -1009,7 +1192,75 @@ impl BitField {
     }
 
     /// Returns the specified slice of `self` assuming that `self` is in a little-endian
-    /// format and that the slice is contiguous. The bits in the slice are arranged in such
+    /// format. The bits in the slice are arranged in such a way that their relative
+    /// magnitude is preserved when interpreted as a little-endian byte array. If `start`
+    /// is not byte-aligned, then the most significant bits from the `start` byte are 
+    /// included in the slice, and if `end` is not byte-aligned, then the least significant
+    /// bits from the `end` byte are included in the slice. 
+    ///
+    /// # Panics
+    /// Panics if `start` or `end` is negative, `start` is greater than `end`, or `end` is 
+    /// greater than `self`'s length.
+    ///
+    /// # Example
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    /// 
+    /// let mut bf = BitField::from_bin_str("0101 1100 1010 0110 0101 1001 1011 0000");
+    /// //                                   CBA       KJIH GFED  RQP ONML                                  
+    /// let bf2 = bf.slice_le(&BitIndex::new(0, 5), &BitIndex::new(2, 7));
+    /// 
+    /// //                                      HGFE DCBA PONM LKJI RQ
+    /// assert_eq!(bf2, BitField::from_bin_str("0011 0010 1100 1101 10"));
+    ///
+    /// let mut bf = BitField::from_bin_str("0101 1100 1010 0110 0101 1001 1011 0");
+    /// let bf2 = bf.slice_le(&BitIndex::new(0, 5), &BitIndex::new(3, 3));
+    ///
+    /// assert_eq!(bf2, BitField::from_bin_str("0011 0010 1100 1101 1100 10"));
+    ///
+    /// let mut bf = BitField::from_bin_str("0101 1100 1010 0110 0101 1001 1011 01");
+    /// let bf2 = bf.slice_le(&BitIndex::new(0, 5), &BitIndex::new(3, 5));
+    /// assert_eq!(bf2, BitField::from_bin_str("0011 0010 1100 1101 0110 1010"));
+    ///```
+    pub fn slice_le(&self, start: &BitIndex, end: &BitIndex) -> BitField {
+        if start.is_negative() {
+            panic!("Negative start index supplied to BitField::slice_le: {}", start);
+        }
+        if end.is_negative() {
+            panic!("Negative end index supplied to BitField::slice_le: {}", end);
+        }
+        if end > &self.length {
+            panic!("Out-of-range end index supplied to BitField::slice_le: {}", end);
+        }
+        let length = end - start;
+        if end.is_negative() {
+            panic!("BitField::slice_le called with end index is less than start index: start={}, end={}", start, end);
+        }
+
+        let mut v = vec![];
+        let mut byte_iter = self.iter_bytes(false).skip(start.byte());
+        let mut c = byte_iter.next().unwrap();
+        let start_cbit = start.cbit();
+        for _ in 0..length.ceil().byte(){
+            let mut b = c;
+            c = byte_iter.next().unwrap();
+            b >>= start.bit(); // Move most significant bits of current byte to LS position
+            b |= c << start_cbit; // Take least significant bits of next byte to MS position
+            
+            v.push(b);
+        }
+        if !length.is_byte_boundary() {
+            if let Some(last) = v.last_mut() {
+                *last <<= length.cbit();
+            }
+        }
+
+        BitField::new(v, length)
+    }
+
+    /// Returns the specified slice of `self` assuming that `self` is in a little-endian
+    /// format, but uses the least significant portion of the first byte and the most-significant
+    /// portion of the last byte. The bits in the slice are arranged in such
     /// a way that their relative magnitude is preserved when interpreted as a little-endian
     /// byte array.
     ///
@@ -1029,13 +1280,12 @@ impl BitField {
     /// // DDDDD = Least significant bits of most significant byte in slice
     /// // EE    = Most signiciant bits of most significant byte in slice
     /// //                                     
-    /// let bf2 = bf.slice_le(&BitIndex::new(0, 5), &BitIndex::new(2, 7));
+    /// let bf2 = bf.slice_le2(&BitIndex::new(0, 5), &BitIndex::new(2, 7));
     /// 
     /// //                                      BBBB BAAA|DDDD DCCC|EE
     /// assert_eq!(bf2, BitField::from_bin_str("0011 0100 0110 0101 01"));
-    ///
     ///```
-    pub fn slice_le(&self, start: &BitIndex, end: &BitIndex) -> BitField {
+    pub fn slice_le2(&self, start: &BitIndex, end: &BitIndex) -> BitField {
         // 0123 4567 89ab cdef ghij klmn opqr stuv
         //       --- ---- ---- ---- -
         // kcde fghi j567 89ab
@@ -1081,156 +1331,6 @@ impl BitField {
 
         BitField::new(v, length)
     }
-
-    /*
-    /// # Examples
-    ///```rust
-    /// use bitutils2::{BitField, BitIndex};
-    ///
-    /// let mut bf = BitField::from_bin_str("0101 1100 1010 0110 0101 1001 1111 0000");
-    ///                                   // 0123 4567 89ab cdef ghij klmn opqr stuv
-    /// let bf2 = bf.slice_le2(&BitIndex::new(1, 7), &BitIndex::new(3, 5));
-    /// assert_eq!(bf2, BitField::from_bin_str("1100 1011 1101 00"));
-    ///                                      // def0 1234 n89a bc
-    ///
-    /// let mut bf = BitField::from_bin_str("11011011000011110100100101000000");
-    /// bf = bf.slice_le2(&BitIndex::bits(9), &BitIndex::bits(32));
-    /// assert_eq!(bf, BitField::from_bin_str("11011011 00001111 1001001"));
-    ///
-    /// let test_f32 = std::f32::consts::PI;
-    /// let full_bf = BitField::from_vec(test_f32.to_le_bytes().to_vec());
-    /// let mut exp_bf = full_bf.slice_le2(&BitIndex::bits(1), &BitIndex::bits(9));
-    /// let mut frac_bf = full_bf.slice_le2(&BitIndex::bits(9), &BitIndex::bits(32));
-    /// frac_bf.pad_unsigned_le(BitIndex::bytes(4));
-    /// let exp = u8::from_le_bytes(exp_bf.into_array().unwrap()) as i32;
-    /// let frac = u32::from_le_bytes(frac_bf.into_array().unwrap());
-    /// assert_eq!(exp, 128);
-    /// assert_eq!(frac, 4788187);
-    /// assert_eq!((2.0_f32).powi(exp - 127) * (1.0 + (frac as f32) * 2.0_f32.powi(-23)), std::f32::consts::PI);
-    ///
-    /// let test_f64 = std::f64::consts::PI;
-    /// let full_bf = BitField::from_vec(test_f64.to_le_bytes().to_vec());
-    /// let mut exp_bf = full_bf.slice_le2(&BitIndex::bits(1), &BitIndex::bits(12));
-    /// let mut frac_bf = full_bf.slice_le2(&BitIndex::bits(12), &BitIndex::bits(64));
-    /// exp_bf.pad_unsigned_le(BitIndex::bytes(2));
-    /// frac_bf.pad_unsigned_le(BitIndex::bytes(8));
-    /// let exp = u16::from_le_bytes(exp_bf.into_array().unwrap()) as i32;
-    /// let frac = u64::from_le_bytes(frac_bf.into_array().unwrap());
-    /// assert_eq!(exp, 1024);
-    /// assert_eq!(frac, 2570638124657944);
-    /// assert_eq!((2.0_f64).powi(exp - 1023) * (1.0 + (frac as f64) * 2.0_f64.powi(-52)), std::f64::consts::PI);
-    ///
-    ///```
-    pub fn slice_le2(&self, start: &BitIndex, end: &BitIndex) -> BitField {
-        // 0123 4567 89ab cdef ghij klmn opqr stuv
-        //       --- ---- ---- ---- -
-        // 0123 4567 89ab cdef ghij klmn opqr stuv
-        // ---- -    ---- ----       ---
-        // def0 1234 
-      
-        // 0123 4567 89ab cdef ghij klmn opqr stuv
-        // ---- -    ---- ----         -
-        // def0 1234 n89a bc
-
-        // 0123 4567 89ab cdef ghij klmn opqr stuv
-        // ---- ---- ---- ----  --- ----
-        // def0 1234 n89a bc
-
-        // 0123 4567 89ab cdef ghij klmn opqr stuv
-        //                     ---^       ^-- ----
-        // stuv ghij pqr
-
-        if start.byte() == end.byte() {
-            let b = self.length.ceil().byte() - 1 - (end.ceil().byte() - 1);
-            let start = BitIndex::new(b, start.bit());
-            let end = BitIndex::new(b, end.bit());
-            return self.bit_slice(&start, &end)
-        }
-
-        println!("Test: {}", end.bit() + start.cbit());
-        let length = BitIndex::bytes(end.byte() - start.byte() - 1) + BitIndex::bits((end.bit() + start.cbit()) as usize);
-        let start_byte = self.length.ceil().byte() - 1 - start.byte();
-        let start_bit = start.bit();
-        println!("Original Start: {:?}", start);
-        println!("Original End: {:?}", end);
-        // println!("Converted Start: {:?}", self.map_be_to_le(&end));
-        // println!("Converted End: {:?}", self.map_be_to_le(&start));
-        let start2 = BitIndex::new(self.length.ceil().byte() - 1 - (end.ceil().byte() - 1), end.bit());
-        let end2 = BitIndex::new(start_byte, start_bit);
-        println!("Start2: {:?}", start2);
-        println!("End2: {:?}", end2);
-        let (start, end) = if *end == self.length {
-            // End includes least significant bit
-            if self.length.byte() == 0 {
-                (self.length.clone(), self.map_be_to_le(&start))
-            } else {
-                (BitIndex::bytes(1), self.map_be_to_le(&start))
-            }
-        } else {
-            (self.map_be_to_le(&end), self.map_be_to_le(&start))
-        };
-        // let (start, end) = (self.map_be_to_le(&end), self.map_be_to_le(&start));
-        println!("Length: {:?}", length);
-        println!("Start: {:?}", start);
-        println!("End: {:?}", end);
-        let mut v = vec![0; length.ceil().byte()];
-
-        // if start.byte() + length.ceil().byte() -1 + 1 >= self.length.ceil().byte() - 1
-
-        for i in 0..(v.len()) {
-            let mut b = self.v[start.byte() + i];
-            // let mut c = self.v[start.byte() + i + 1];
-            // if i == 0 {
-            //     // Move the portion of the byte within the slice to the LSB position
-            //     // b >>= start.cbit(); 
-            // } else if start.byte() + i + 1 == end.byte() {
-            //     // Move the portion of the byte within the slice to the LSB position
-            //     // c <<= end.cbit();
-            //     // println!("{}, {}", i, c);
-            // } 
-            println!("b = {}", b);
-            if start.is_byte_boundary() {
-                v[i] = b;
-            } else {
-                println!("b >> {} = {}", start.cbit(), b >> start.cbit());
-                v[i] = b >> start.cbit();
-                // v[i] |= c << start.bit();
-                if start.byte() + i + 1 < self.v.len() {
-                    let c = self.v[start.byte() + i + 1];
-                    println!("c = {}", c);
-                    println!("v << {} = {}", start.bit(), c << start.bit());
-                    v[i] |= c << start.bit();
-                }
-            }
-            
-        }
-        let n_bytes = v.len();
-        if length.bit() != 0 {
-            v[n_bytes - 1] = 
-            
-            v[n_bytes - 1] << length.cbit();
-        }
-        
-
-        // v[length.ceil().byte() - 1] = ((self.v[end.byte()]  >> end.cbit()) >> start.bit()) << length.cbit();
-
-        // // v[0] = ____ _567
-        // v[0] = (self.v[start.byte()] << start.bit()) >> start.bit();
-        // // v[0] |= bcde f___ = bcde f567
-        // v[0] |= self.v[start.byte() + 1] << start.cbit();
-
-        // // v[1] = ____ _89a
-        // v[1] = self.v[start.byte() + 1] >> start.bit();
-        // // v[1] |= ijkl m___
-        // if start.byte() + 2 == end.byte() {
-        //     v[1] |= (self.v[start.byte() + 2] >> end.cbit()) << start.cbit();
-        // }
-        
-        // v[2] = ((self.v[start.byte() + 2] >> end.cbit()) >> start.bit()) << length.cbit();
-
-        BitField::new(v, length)
-    }
-    */
 
     /// Converts the data contained within `self` to a big-endian unsigned
     /// integer by removing the sign information according to the source
@@ -1444,7 +1544,7 @@ impl BitField {
             let delta = new_length - self.length;
             let pad = BitField::zeros(delta);
             let original = std::mem::replace(self, pad);
-            self.extend(&original);
+            self.extend_be(&original);
         }
     }
 
@@ -1475,27 +1575,9 @@ impl BitField {
     pub fn pad_unsigned_le(&mut self, new_length: BitIndex) {
         if self.length < new_length {
 
-            // Pad the left side with zeros to the new length
+            // Pad the right side with zeros to the new length
             let pad = BitField::zeros(new_length - self.length);
-            let old_length = self.length.clone();
-            self.extend(&pad);
-
-
-            if !old_length.is_byte_boundary() {
-                // If `self` ended in a partial byte, that data will need to be
-                // shifted so that it retains the same significance.
-                let shift: u8;
-                if new_length.byte() > old_length.byte() {
-                    // If a new byte was added, push the partial byte at the end 
-                    // of the original to the LSB position
-                    shift = old_length.cbit();
-                } else {
-                    // If a new byte hasn't been added, push the partial byte at
-                    // the end to the new LSB position (not the end of the byte)
-                    shift = new_length.bit() - old_length.bit();
-                }
-                self.v[old_length.byte()] = self.v[old_length.byte()] >> shift;
-            }
+            self.extend_le(&pad);
         }
     }
 
@@ -1541,7 +1623,7 @@ impl BitField {
                 BitField::ones(delta)
             };
             let original = std::mem::replace(self, pad);
-            self.extend(&original);
+            self.extend_be(&original);
         }
     }
 
@@ -1693,7 +1775,7 @@ impl BitField {
             // Left pad to the new length with zeros
             let pad = BitField::zeros(delta);
             let original = std::mem::replace(self, pad);
-            self.extend(&original);
+            self.extend_be(&original);
 
             // Insert the sign at the new MSB position
             self.v[0] |= sign;
@@ -2419,57 +2501,121 @@ mod bit_field_tests {
     }
 
     #[test]
-    fn truncate() {
-        let mut bf = BitField::from_bin_str("0101 1111 0000 1010 1100 0011");
-        bf.truncate(BitIndex::new(2, 2));
-        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1010 11"));
-        bf.truncate(BitIndex::new(2, 0));
-        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1010"));
-        bf.truncate(BitIndex::new(1, 6));
+    fn truncate_be() {
+        let mut bf = BitField::from_bin_str("0101 1111 0000 1011 1100 0001");
+        bf.truncate_be(BitIndex::new(2, 2));
+        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1011 11"));
+        bf.truncate_be(BitIndex::new(2, 0));
+        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1011"));
+        bf.truncate_be(BitIndex::new(1, 6));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 10"));
-        bf.truncate(BitIndex::new(1, 6));
+        bf.truncate_be(BitIndex::new(1, 6));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 10"));
-        bf.truncate(BitIndex::new(1, 7));
+        bf.truncate_be(BitIndex::new(1, 7));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 10"));
-        bf.truncate(BitIndex::new(1, 2));
+        bf.truncate_be(BitIndex::new(1, 2));
         assert_eq!(bf, BitField::from_bin_str("0101 1111 00"));
-        bf.truncate(BitIndex::new(0, 2));
+        bf.truncate_be(BitIndex::new(0, 2));
         assert_eq!(bf, BitField::from_bin_str("01"));
     }
 
     #[test]
-    fn extend() {
+    fn truncate_le() {
+        let mut bf = BitField::from_bin_str("0101 1111 0000 1011 1100 0001");
+        bf.truncate_le(BitIndex::new(2, 2));
+        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1011 01"));
+        bf.truncate_le(BitIndex::new(2, 0));
+        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1011"));
+        bf.truncate_le(BitIndex::new(1, 6));
+        assert_eq!(bf, BitField::from_bin_str("0101 1111 0010 11"));
+        bf.truncate_le(BitIndex::new(1, 6));
+        assert_eq!(bf, BitField::from_bin_str("0101 1111 0010 11"));
+        bf.truncate_le(BitIndex::new(1, 7));
+        assert_eq!(bf, BitField::from_bin_str("0101 1111 0010 11"));
+        bf.truncate_le(BitIndex::new(1, 2));
+        assert_eq!(bf, BitField::from_bin_str("0101 1111 11"));
+        bf.truncate_le(BitIndex::new(0, 2));
+        assert_eq!(bf, BitField::from_bin_str("11"));
+    }
+
+    #[test]
+    fn extend_be() {
         let mut bf = BitField::from_bin_str("");
-        bf.extend(&BitField::from_bin_str("01"));
+        bf.extend_be(&BitField::from_bin_str(""));
+        assert_eq!(bf, BitField::from_bin_str(""));
+        bf.extend_be(&BitField::from_bin_str("01"));
         assert_eq!(bf, BitField::from_bin_str("01"));
-        bf.extend(&BitField::from_bin_str("01"));
-        assert_eq!(bf, BitField::from_bin_str("0101"));
-        bf.extend(&BitField::from_bin_str("1111 0000 1111 0000"));
-        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1111 0000"));
-        bf.extend(&BitField::from_bin_str("0101 0"));
-        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1111 0000 0101 0"));
-        bf.extend(&BitField::from_bin_str("0011 00"));
-        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1111 0000 0101 0001 100"));
-        bf.extend(&BitField::from_bin_str("111"));
-        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1111 0000 0101 0001 1001 11"));
-        bf.extend(&BitField::from_bin_str("0101 11"));
-        assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1111 0000 0101 0001 1001 1101 0111"));
+        bf.extend_be(&BitField::from_bin_str("11"));
+        assert_eq!(bf, BitField::from_bin_str("0111"));
+        bf.extend_be(&BitField::from_bin_str("1111 0000 1111 0000"));
+        assert_eq!(bf, BitField::from_bin_str("0111 1111 0000 1111 0000"));
+        bf.extend_be(&BitField::from_bin_str("0101 0"));
+        assert_eq!(bf, BitField::from_bin_str("0111 1111 0000 1111 0000 0101 0"));
+        bf.extend_be(&BitField::from_bin_str("0011 00"));
+        assert_eq!(bf, BitField::from_bin_str("0111 1111 0000 1111 0000 0101 0001 100"));
+        bf.extend_be(&BitField::from_bin_str("111"));
+        assert_eq!(bf, BitField::from_bin_str("0111 1111 0000 1111 0000 0101 0001 1001 11"));
+        bf.extend_be(&BitField::from_bin_str("0101 11"));
+        assert_eq!(bf, BitField::from_bin_str("0111 1111 0000 1111 0000 0101 0001 1001 1101 0111"));
+        bf.extend_be(&BitField::from_bin_str(""));
+        assert_eq!(bf, BitField::from_bin_str("0111 1111 0000 1111 0000 0101 0001 1001 1101 0111"));
     }
 
     #[test]
-    fn repeat() {
-        let mut bf = BitField::from_bin_str("01");
-        bf.repeat(1);
+    fn extend_le() {
+        let mut bf = BitField::from_bin_str("");
+        bf.extend_le(&BitField::from_bin_str(""));
+        assert_eq!(bf, BitField::from_bin_str(""));
+        bf.extend_le(&BitField::from_bin_str("01"));
         assert_eq!(bf, BitField::from_bin_str("01"));
-        bf.repeat(2);
+        bf.extend_le(&BitField::from_bin_str("11"));
+        assert_eq!(bf, BitField::from_bin_str("1101"));
+        bf.extend_le(&BitField::from_bin_str("1111 0000 1111 0000"));
+        assert_eq!(bf, BitField::from_bin_str("0000 1101 0000 1111 1111"));
+        bf.extend_le(&BitField::from_bin_str("0101 0"));
+        assert_eq!(bf, BitField::from_bin_str("0000 1101 0000 1111 1010 1111 0"));
+        bf.extend_le(&BitField::from_bin_str("0011 00"));
+        assert_eq!(bf, BitField::from_bin_str("0000 1101 0000 1111 1010 1111 0011 000"));
+        bf.extend_le(&BitField::from_bin_str("111"));
+        assert_eq!(bf, BitField::from_bin_str("0000 1101 0000 1111 1010 1111 1001 1000 11"));
+        bf.extend_le(&BitField::from_bin_str("0101 11"));
+        assert_eq!(bf, BitField::from_bin_str("0000 1101 0000 1111 1010 1111 1001 1000 0101 1111"));
+        bf.extend_le(&BitField::from_bin_str(""));
+        assert_eq!(bf, BitField::from_bin_str("0000 1101 0000 1111 1010 1111 1001 1000 0101 1111"));
+        // assert_eq!(bf, BitField::from_bin_str("0101 1111 0000 1111 0000 0101 0001 1001 1101 0111"));
+    }
+
+    #[test]
+    fn repeat_be() {
+        let mut bf = BitField::from_bin_str("01");
+        bf.repeat_be(1);
+        assert_eq!(bf, BitField::from_bin_str("01"));
+        bf.repeat_be(2);
         assert_eq!(bf, BitField::from_bin_str("0101"));
-        bf.repeat(3);
+        bf.repeat_be(3);
         assert_eq!(bf, BitField::from_bin_str("0101 0101 0101"));
-        bf.repeat(2);
+        bf.repeat_be(2);
         assert_eq!(bf, BitField::from_bin_str("0101 0101 0101 0101 0101 0101"));
         let mut bf2 = BitField::from_bin_str("01");
-        bf.repeat(1000);
-        bf2.repeat(12000);
+        bf.repeat_be(1000);
+        bf2.repeat_be(12000);
+        assert_eq!(bf, bf2);
+    }
+
+    #[test]
+    fn repeat_le() {
+        let mut bf = BitField::from_bin_str("01");
+        bf.repeat_le(1);
+        assert_eq!(bf, BitField::from_bin_str("01"));
+        bf.repeat_le(2);
+        assert_eq!(bf, BitField::from_bin_str("0101"));
+        bf.repeat_le(3);
+        assert_eq!(bf, BitField::from_bin_str("0101 0101 0101"));
+        bf.repeat_le(2);
+        assert_eq!(bf, BitField::from_bin_str("0101 0101 0101 0101 0101 0101"));
+        let mut bf2 = BitField::from_bin_str("01");
+        bf.repeat_le(1000);
+        bf2.repeat_le(12000);
         assert_eq!(bf, bf2);
     }
 
@@ -2681,6 +2827,22 @@ mod bit_field_tests {
     }
 
     #[test]
+    fn slice_le() {
+        let mut bf = BitField::from_bin_str("0101 1100 1010 0110 0101 1001 1111 0000");
+        //                                   CBA       KJIH GFED  RQP ONML
+        //                                     
+        let bf2 = bf.slice_le(&BitIndex::new(0, 5), &BitIndex::new(2, 7));
+        
+        //                                      HGFE DCBA PONM LKJI RQ
+        assert_eq!(bf2, BitField::from_bin_str("0011 0010 1100 1101 10"));
+
+        let mut bf = BitField::from_bin_str("0101 1100 1010 0110 0101 1001 1011 0");
+        let bf2 = bf.slice_le(&BitIndex::new(0, 5), &BitIndex::new(3, 3));
+    
+        assert_eq!(bf2, BitField::from_bin_str("0011 0010 1100 1101 1100 10"));
+    }
+
+    #[test]
     fn slices() {
         let bf = BitField::from_vec(vec![0xAB, 0xC0, 0xAB, 0xFF, 0x02]);
 
@@ -2778,8 +2940,8 @@ mod bit_field_tests {
 
         let bf = BitField::from_vec(frac.to_be_bytes().to_vec());
         let mut bf2 = BitField::zeros(BitIndex::new(0, 1));
-        bf2.extend(&BitField::from_vec(vec![exp]));
-        bf2.extend(&BitField::zeros(BitIndex::bits(23)));
+        bf2.extend_be(&BitField::from_vec(vec![exp]));
+        bf2.extend_be(&BitField::zeros(BitIndex::bits(23)));
         bf2 = &bf2 | &bf;
         let result = f32::from_be_bytes(bf2.clone().into_array().unwrap());
         assert_eq!(result, std::f32::consts::PI);
