@@ -1332,6 +1332,64 @@ impl BitField {
         BitField::new(v, length)
     }
 
+    /// Overwrites a portion of `self` starting at `start` with the data within `new` assuming
+    /// all data is in big endian byte order. This means that if `start` is not byte-aligned then
+    /// the most significant portion of the start byte will be retained, and if the end of the
+    /// inserted slice is not byte-algined then the least significant portion of the end byte
+    /// will be retained.
+    ///
+    /// # Panics
+    /// Panics if `start` is negative or if `start + new.len()` is greater than `self.len()`
+    ///
+    /// # Example
+    ///```rust
+    /// use bitutils2::{BitField, BitIndex};
+    /// 
+    /// let mut bf = BitField::from_bin_str("0101 1100 1010 0110 0101 1001 1011 0000");                      
+    /// let bf2 = BitField::from_bin_str("1100 0011 1010 0101 100");
+    /// 
+    /// bf.overwrite_slice_be(&BitIndex::new(0, 5), bf2);
+    /// assert_eq!(bf, BitField::from_bin_str("0101 1110 0001 1101 0010 1100 1011 0000"));
+    ///
+    /// let bf2 = BitField::from_bin_str("0111 0001 0101 1010 0110 10");
+    /// bf.overwrite_slice_be(&BitIndex::new(0, 5), bf2);
+    /// assert_eq!(bf, BitField::from_bin_str("0101 1011 1000 1010 1101 0011 0101 0000"));
+    ///```
+    pub fn overwrite_slice_be(&mut self, start: &BitIndex, new: BitField) {
+        if start.is_negative() {
+            panic!("Negative start index supplied to BitField::overwrite_slice_be: {}", start);
+        }
+        if start + new.length > &self.length {
+            panic!("Out-of-range end index supplied to BitField::slice_le: {}", end);
+        }
+        let mut current_byte = start.byte();
+
+        let cbit = start.cbit();
+
+        // Initialize carry to most-significant portion of the start byte
+        let mut carry = self.v[current_byte] & (0xff_u8 << cbit);
+
+        for b in new.iter_bytes(true) {
+
+            // Calculate the current byte's value by combining the carry
+            // portion in the most-signicant position and the least-signifcant
+            // portion of the inerted byte in the most-significant position
+            self.v[current_byte] = (b >> start.bit()) | carry;
+
+            // Move the least-significant portion of the inserted byte to the
+            // most-significant position for inclusion in the next byte
+            carry = b << cbit;
+            current_byte += 1;
+        }
+
+        // If the start position and length end up pushing data to an extra byte,
+        // then mask off the MSB portion and insert the carry contents.
+        if start.bit() + new.length.bit() > 8 {
+            self.v[current_byte] &= 0xff >> cbit;
+            self.v[current_byte] |= carry;
+        }
+    }
+
     /// Converts the data contained within `self` to a big-endian unsigned
     /// integer by removing the sign information according to the source
     /// format provided. Returns `true` if the sign was negative before being
