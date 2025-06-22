@@ -1359,34 +1359,61 @@ impl BitField {
         if start.is_negative() {
             panic!("Negative start index supplied to BitField::overwrite_slice_be: {}", start);
         }
-        if start + new.length > &self.length {
-            panic!("Out-of-range end index supplied to BitField::slice_le: {}", end);
+        let end = *start + new.length;
+        if end > self.length {
+            panic!("Out-of-range end index supplied to BitField::overwrite_slice_be: {}", end);
         }
+
+        // Keep track of the retained porition of the end byte
+        let last = if end.byte() < self.v.len() {
+            self.v[end.byte()] & (0xff_u8 >> end.bit())
+        } else {
+            0
+        };
+
         let mut current_byte = start.byte();
 
-        let cbit = start.cbit();
+        if start.is_byte_boundary() {
+            // If the slice starts on a byte boundary, then we can just overwrite
+            // that portion of the vec with the common special handling for last
+            for b in new.iter_bytes(true) {
+                self.v[current_byte] = b;
+                current_byte += 1;
+            }
 
-        // Initialize carry to most-significant portion of the start byte
-        let mut carry = self.v[current_byte] & (0xff_u8 << cbit);
+        } else {
+            let cbit = start.cbit();
 
-        for b in new.iter_bytes(true) {
+            // Initialize carry to most-significant portion of the start byte
+            let mut carry = self.v[current_byte] & (0xff_u8 << cbit);
 
-            // Calculate the current byte's value by combining the carry
-            // portion in the most-signicant position and the least-signifcant
-            // portion of the inerted byte in the most-significant position
-            self.v[current_byte] = (b >> start.bit()) | carry;
+            for b in new.iter_bytes(true) {
 
-            // Move the least-significant portion of the inserted byte to the
-            // most-significant position for inclusion in the next byte
-            carry = b << cbit;
-            current_byte += 1;
+                // Calculate the current byte's value by combining the carry
+                // portion in the most-signicant position and the least-signifcant
+                // portion of the inerted byte in the most-significant position
+                self.v[current_byte] = (b >> start.bit()) | carry;
+
+                // Move the least-significant portion of the inserted byte to the
+                // most-significant position for inclusion in the next byte
+                carry = b << cbit;
+                current_byte += 1;
+            }
+
+            // If the start position and length end up pushing data to an extra byte,
+            // then mask off the MSB portion and insert the carry contents.
+            if start.bit() + new.length.bit() > 8 {
+                self.v[current_byte] &= 0xff >> cbit;
+                self.v[current_byte] |= carry;
+            }
         }
+        
 
-        // If the start position and length end up pushing data to an extra byte,
-        // then mask off the MSB portion and insert the carry contents.
-        if start.bit() + new.length.bit() > 8 {
-            self.v[current_byte] &= 0xff >> cbit;
-            self.v[current_byte] |= carry;
+        
+
+        // Insert the ratained portion of the last byte
+        if end.byte() < self.v.len() {
+            self.v[end.byte()] |= last;
         }
     }
 
@@ -2953,6 +2980,64 @@ mod bit_field_tests {
         let bx2 = BitIndex::new(1, 6);
         let s = bf.bit_slice(&bx1, &bx2);
         assert_eq!(s, BitField::from_bin_str("1100 0011 1010 01"));
+    }
+
+    #[test]
+    fn overwrite_slice_be() {
+        let mut bf = BitField::from_bin_str("0110 1001 0101 1010 1100 0011 1110 0001");
+        let bf2 = BitField::from_bin_str("");
+
+        bf.overwrite_slice_be(&BitIndex::new(1, 1), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 0101 1010 1100 0011 1110 0001"));
+
+        let bf2 = BitField::from_bin_str("1");
+        bf.overwrite_slice_be(&BitIndex::new(1, 2), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 0111 1010 1100 0011 1110 0001"));
+
+        let bf2 = BitField::from_bin_str("00");
+        bf.overwrite_slice_be(&BitIndex::new(1, 2), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 0100 1010 1100 0011 1110 0001"));
+
+        let bf2 = BitField::from_bin_str("1101");
+        bf.overwrite_slice_be(&BitIndex::new(1, 2), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 0111 0110 1100 0011 1110 0001"));
+
+        let bf2 = BitField::from_bin_str("001001");
+        bf.overwrite_slice_be(&BitIndex::new(1, 2), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 0100 1001 1100 0011 1110 0001"));
+
+        let bf2 = BitField::from_bin_str("10110110");
+        bf.overwrite_slice_be(&BitIndex::new(1, 0), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 1011 0110 1100 0011 1110 0001"));
+
+        let bf2 = BitField::from_bin_str("1011 0110 01");
+        bf.overwrite_slice_be(&BitIndex::new(1, 2), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 1010 1101 1001 0011 1110 0001"));
+
+        let bf2 = BitField::from_bin_str("1011 0110 01");
+        bf.overwrite_slice_be(&BitIndex::new(1, 6), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 1010 1110 1101 1001 1110 0001"));
+
+        let bf2 = BitField::from_bin_str("0101 1100 1010 11");
+        bf.overwrite_slice_be(&BitIndex::new(1, 6), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 1010 1101 0111 0010 1011 0001"));
+
+        let bf2 = BitField::from_bin_str("1011 0110 0101 0011 00");
+        bf.overwrite_slice_be(&BitIndex::new(1, 6), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 1010 1110 1101 1001 0100 1100"));
+
+        let bf2 = BitField::from_bin_str("0101 1100 0011 0110 1001 0111 1110 1011");
+        bf.overwrite_slice_be(&BitIndex::new(0, 0), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0101 1100 0011 0110 1001 0111 1110 1011"));
+
+        let mut bf = BitField::from_bin_str("0110 1001 0101 1010 1100 0011 1110 0001 01");
+        let bf2 = BitField::from_bin_str("1011 0110 0101 0011 0010");
+        bf.overwrite_slice_be(&BitIndex::new(1, 6), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0110 1001 0101 1010 1101 1001 0100 1100 10"));
+
+        let bf2 = BitField::from_bin_str("0101 1100 0011 0110 1001 0111 1110 1011 01");
+        bf.overwrite_slice_be(&BitIndex::new(0, 0), bf2);
+        assert_eq!(bf, BitField::from_bin_str("0101 1100 0011 0110 1001 0111 1110 1011 01"));
     }
 
     /*
